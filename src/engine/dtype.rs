@@ -22,11 +22,7 @@ use candle_core::{DType, Device};
 /// so this compiles cleanly without the `cuda` feature (CPU-only builds).
 pub fn resolve(device: &Device, bf16: bool) -> DType {
     if device.is_cuda() {
-        if bf16 {
-            DType::BF16
-        } else {
-            DType::F16
-        }
+        if bf16 { DType::BF16 } else { DType::F16 }
     } else {
         DType::F32
     }
