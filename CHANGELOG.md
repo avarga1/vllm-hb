@@ -10,6 +10,15 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- NCCL all_reduce (`--features nccl`) — replaces host-mediated CPU reduction
+  with device-to-device `ncclAllReduce` (SUM) via cudarc's safe bindings
+  - `TpWorld` initialises one `ncclComm_t` per rank via `Comm::from_devices`
+  - Single-process multi-GPU pattern: `group_start` / `group_end` batches
+    sequential per-rank calls into one collective — no thread-per-rank needed
+  - DType dispatch: F32, F16, BF16 all supported via macro
+  - CPU fallback preserved when `nccl` feature is off (zero-change default)
+  - `TpLlamaBackend::forward` now calls `world.all_reduce(partials)` which
+    routes to NCCL or CPU based on the active feature set
 - Scheduler wired into inference worker (`worker/mod.rs`)
   - `Worker` now holds a `Scheduler`; incoming `WorkItem`s are converted to
     `SequenceGroup`s and admitted via `scheduler.add_sequence_group()`

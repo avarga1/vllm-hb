@@ -16,6 +16,10 @@ path = "src/main.rs"
 default    = ["cuda"]
 # CUDA compute via cudarc — required for GPU inference
 cuda       = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+# NCCL all_reduce — replaces host-mediated CPU reduction for tensor parallelism.
+# Requires NCCL runtime (libnccl.so) and the CUDA feature.
+# Enable with: cargo build --release --features nccl
+nccl       = ["cuda", "cudarc/nccl", "cudarc/f16"]
 # Flash Attention 2 — sm_80+ (Ampere) only; ~2× attention speedup on long context
 # Enable with: cargo build --release --features flash-attn
 flash-attn = ["cuda", "candle-transformers/flash-attn"]
@@ -47,6 +51,9 @@ tokenizers    = { version = "0.21", features = ["http"] }
 candle-core         = "0.9"
 candle-nn           = "0.9"
 candle-transformers = "0.9"
+# Explicit cudarc dep so the `nccl` and `f16` features can be toggled.
+# Version must stay in sync with candle-core's transitive requirement.
+cudarc              = { version = "0.17", optional = true }
 
 # Sampling
 rand          = "0.8"

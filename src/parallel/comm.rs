@@ -10,13 +10,18 @@
 //! `all_reduce` with a single shard returns the shard (moved to `device`)
 //! without any copy or arithmetic — zero overhead for `tp=1`.
 //!
-//! # Multi-GPU implementation
+//! # Multi-GPU: NCCL path (`--features nccl`)
 //!
-//! Reduction is host-mediated: each shard is moved to CPU, accumulated with
-//! `Tensor::add`, then moved to the target device.  This avoids the NCCL
-//! dependency for a first working implementation.  When NCCL bindings in
-//! `cudarc` are stable the accumulation loop can be replaced by a single
-//! `ncclAllReduce` call without changing the call-sites.
+//! `nccl_all_reduce` uses `ncclAllReduce` (SUM) via cudarc's safe bindings.
+//! All shards stay on-device — no GPU→CPU transfer.  The single-process
+//! multi-GPU pattern wraps calls in `group_start` / `group_end` so NCCL
+//! treats the sequential per-rank calls as one collective operation.
+//!
+//! # Multi-GPU: CPU fallback (default)
+//!
+//! `all_reduce` accumulates on CPU: each shard is copied to CPU, summed, then
+//! moved to the target device.  Correct on all hardware; penalised by PCIe
+//! bandwidth on every TP step.
 //!
 //! # All-gather
 //!
@@ -54,6 +59,110 @@ pub fn all_reduce(shards: &[Tensor], device: &Device) -> Result<Tensor> {
             Ok(acc.to_device(device)?)
         }
     }
+}
+
+// ── NCCL all_reduce ───────────────────────────────────────────────────────────
+
+/// Device-to-device all_reduce using NCCL (SUM).
+///
+/// All `shards[rank]` must already live on their respective CUDA devices.
+/// After the call every rank's buffer holds the element-wise sum; the caller
+/// receives the rank-0 tensor.
+///
+/// # Single-process multi-GPU pattern
+///
+/// NCCL requires all ranks to "simultaneously" call `ncclAllReduce`.  In a
+/// single-process setup we wrap the sequential per-rank calls with
+/// `group_start` / `group_end`; NCCL then treats them as one collective.
+///
+/// # DType dispatch
+///
+/// F32, F16, and BF16 are supported.  The dtype is read from the first shard;
+/// all shards must have the same dtype.
+#[cfg(feature = "nccl")]
+pub fn nccl_all_reduce(
+    comms: &[crate::parallel::world::NcclComm],
+    shards: Vec<Tensor>,
+) -> Result<Tensor> {
+    use candle_core::{DType, Storage};
+    use cudarc::nccl::safe::{ReduceOp, group_end, group_start};
+
+    if shards.is_empty() {
+        bail!("nccl_all_reduce: shard list is empty");
+    }
+    if shards.len() != comms.len() {
+        bail!(
+            "nccl_all_reduce: {} shards but {} comms",
+            shards.len(),
+            comms.len()
+        );
+    }
+
+    let dtype = shards[0].dtype();
+    let shape = shards[0].shape().clone();
+
+    // Collect (src_slice, cuda_dev) pairs before entering the NCCL group so
+    // we hold the storage read-guards only for as long as needed.
+    macro_rules! reduce_dtype {
+        ($T:ty) => {{
+            // Phase 1 — allocate output buffers and issue all_reduce calls
+            // inside a single NCCL group.
+            let mut dsts: Vec<cudarc::driver::CudaSlice<$T>> = Vec::with_capacity(shards.len());
+            let mut cuda_devs: Vec<candle_core::CudaDevice> = Vec::with_capacity(shards.len());
+
+            group_start().map_err(|e| anyhow::anyhow!("ncclGroupStart: {e:?}"))?;
+
+            for (shard, nccl_comm) in shards.iter().zip(comms.iter()) {
+                let (storage, layout) = shard.storage_and_layout();
+                let Storage::Cuda(ref cs) = *storage else {
+                    group_end().ok();
+                    bail!("nccl_all_reduce: shard is not on CUDA");
+                };
+                let src = cs
+                    .as_cuda_slice::<$T>()
+                    .map_err(|e| anyhow::anyhow!("as_cuda_slice: {e:?}"))?;
+                let src_view = src.slice(layout.start_offset()..);
+                let elem_count = layout.shape().elem_count();
+
+                let mut dst = nccl_comm
+                    .0
+                    .stream()
+                    .alloc_zeros::<$T>(elem_count)
+                    .map_err(|e| anyhow::anyhow!("alloc_zeros: {e:?}"))?;
+
+                nccl_comm
+                    .0
+                    .all_reduce(&src_view, &mut dst, &ReduceOp::Sum)
+                    .map_err(|e| anyhow::anyhow!("ncclAllReduce: {e:?}"))?;
+
+                cuda_devs.push(cs.device().clone());
+                dsts.push(dst);
+                // storage read-guard dropped here
+            }
+
+            group_end().map_err(|e| anyhow::anyhow!("ncclGroupEnd: {e:?}"))?;
+
+            // Phase 2 — wrap rank-0 output as a candle Tensor.
+            let dst0 = dsts.remove(0);
+            let dev0 = cuda_devs.remove(0);
+            let out_storage = candle_core::CudaStorage::wrap_cuda_slice(dst0, dev0);
+            Tensor::from_storage(
+                Storage::Cuda(out_storage),
+                shape,
+                candle_core::op::BackpropOp::none(),
+                false,
+            )
+        }};
+    }
+
+    let result = match dtype {
+        DType::F32 => reduce_dtype!(f32),
+        DType::F16 => reduce_dtype!(half::f16),
+        DType::BF16 => reduce_dtype!(half::bf16),
+        other => bail!("nccl_all_reduce: unsupported dtype {other:?}"),
+    };
+
+    Ok(result)
 }
 
 // ── all_gather ────────────────────────────────────────────────────────────────
