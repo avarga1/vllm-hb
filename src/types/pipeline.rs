@@ -36,7 +36,12 @@ pub struct TokenEvent {
 }
 
 /// Final statistics emitted when generation completes.
+///
+/// `ttft_ms`, `total_ms`, and `tokens_per_sec` are recorded per-request
+/// and will be surfaced via the Prometheus metrics endpoint (see
+/// `server/metrics.rs`).  Suppressed until that feature lands.
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub struct GenerationStats {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
