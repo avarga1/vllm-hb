@@ -61,7 +61,13 @@ impl BlockAllocator {
 
     fn allocate(&mut self) -> Option<usize> {
         let id = self.free_blocks.pop_front()?;
-        self.allocated.insert(id, PhysicalBlock { block_id: id, ref_count: 1 });
+        self.allocated.insert(
+            id,
+            PhysicalBlock {
+                block_id: id,
+                ref_count: 1,
+            },
+        );
         Some(id)
     }
 
@@ -80,7 +86,10 @@ impl BlockAllocator {
     }
 
     fn ref_count(&self, block_id: usize) -> usize {
-        self.allocated.get(&block_id).map(|b| b.ref_count).unwrap_or(0)
+        self.allocated
+            .get(&block_id)
+            .map(|b| b.ref_count)
+            .unwrap_or(0)
     }
 
     #[allow(dead_code)]
@@ -146,7 +155,10 @@ impl BlockManager {
     pub fn allocate(&mut self, group: &SequenceGroup) -> Result<()> {
         let needed = group.num_logical_blocks(self.block_size);
         if needed > self.gpu.num_free() {
-            bail!("not enough GPU blocks: need {needed}, have {}", self.gpu.num_free());
+            bail!(
+                "not enough GPU blocks: need {needed}, have {}",
+                self.gpu.num_free()
+            );
         }
         for seq in &group.seqs {
             let mut table = BlockTable::default();

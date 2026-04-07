@@ -42,10 +42,13 @@ pub struct SchedulerOutputs {
     /// Groups whose next token needs a decode forward pass.
     pub to_decode: Vec<SequenceGroup>,
     /// `(cpu_block, gpu_block)` pairs: blocks moved CPU → GPU this step.
+    #[allow(dead_code)]
     pub blocks_to_swap_in: Vec<(usize, usize)>,
     /// `(gpu_block, cpu_block)` pairs: blocks moved GPU → CPU this step.
+    #[allow(dead_code)]
     pub blocks_to_swap_out: Vec<(usize, usize)>,
     /// `(src_block, dst_block)` copy-on-write pairs the engine must handle.
+    #[allow(dead_code)]
     pub blocks_to_copy: Vec<(usize, usize)>,
 }
 
@@ -246,7 +249,11 @@ impl Scheduler {
     ///
     /// Finished groups are freed; all others return to `running`.
     pub fn update(&mut self, mut outputs: SchedulerOutputs) {
-        for group in outputs.to_prefill.drain(..).chain(outputs.to_decode.drain(..)) {
+        for group in outputs
+            .to_prefill
+            .drain(..)
+            .chain(outputs.to_decode.drain(..))
+        {
             if group.is_finished() {
                 self.block_manager.free(&group);
             } else {
@@ -326,8 +333,7 @@ mod tests {
         let mut out = sched.schedule();
         for g in &mut out.to_prefill {
             for s in &mut g.seqs {
-                s.status =
-                    SequenceStatus::Finished(crate::types::pipeline::FinishReason::Stop);
+                s.status = SequenceStatus::Finished(crate::types::pipeline::FinishReason::Stop);
             }
         }
         sched.update(out);

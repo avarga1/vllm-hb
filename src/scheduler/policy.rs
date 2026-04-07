@@ -64,9 +64,9 @@ mod tests {
     #[test]
     fn fcfs_sorts_oldest_first() {
         let groups = vec![
-            make_group("new", 10),   // arrived 10ms ago
-            make_group("old", 100),  // arrived 100ms ago
-            make_group("mid", 50),   // arrived 50ms ago
+            make_group("new", 10),  // arrived 10ms ago
+            make_group("old", 100), // arrived 100ms ago
+            make_group("mid", 50),  // arrived 50ms ago
         ];
         let policy = FcfsPolicy;
         let sorted = policy.sort_by_priority(Instant::now(), &groups);

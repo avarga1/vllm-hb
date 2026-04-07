@@ -84,7 +84,11 @@ impl Sequence {
     /// Slots used in the last (possibly partial) block.
     pub fn last_block_num_filled(&self, block_size: usize) -> usize {
         let rem = self.len() % block_size;
-        if rem == 0 && self.len() > 0 { block_size } else { rem }
+        if rem == 0 && self.len() > 0 {
+            block_size
+        } else {
+            rem
+        }
     }
 }
 
@@ -98,7 +102,11 @@ pub struct SequenceGroup {
 
 impl SequenceGroup {
     pub fn new(request_id: String, seqs: Vec<Sequence>) -> Self {
-        Self { request_id, seqs, arrival_time: Instant::now() }
+        Self {
+            request_id,
+            seqs,
+            arrival_time: Instant::now(),
+        }
     }
 
     #[allow(dead_code)]
@@ -119,7 +127,9 @@ impl SequenceGroup {
     }
 
     pub fn running_seqs(&self) -> impl Iterator<Item = &Sequence> {
-        self.seqs.iter().filter(|s| s.status == SequenceStatus::Running)
+        self.seqs
+            .iter()
+            .filter(|s| s.status == SequenceStatus::Running)
     }
 }
 
@@ -132,12 +142,7 @@ mod tests {
 
     fn make_seq(id: u64, prompt_len: usize) -> Sequence {
         let (tx, _) = unbounded_channel();
-        Sequence::new(
-            id,
-            vec![0u32; prompt_len],
-            SamplingParams::default(),
-            tx,
-        )
+        Sequence::new(id, vec![0u32; prompt_len], SamplingParams::default(), tx)
     }
 
     #[test]

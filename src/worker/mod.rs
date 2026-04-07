@@ -40,8 +40,8 @@ use tokio::sync::mpsc;
 
 use crate::engine::Engine;
 use crate::sampling;
-use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::scheduler::Scheduler;
+use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::tokenize;
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem,
@@ -147,8 +147,7 @@ impl Worker {
         let id = self.next_seq_id;
         self.next_seq_id += 1;
 
-        let seq =
-            Sequence::new(id, item.token_ids, item.params, item.result_tx);
+        let seq = Sequence::new(id, item.token_ids, item.params, item.result_tx);
         let group = SequenceGroup::new(item.id.clone(), vec![seq]);
         self.scheduler.add_sequence_group(group);
 
@@ -171,11 +170,7 @@ impl Worker {
         let mut done: Vec<SequenceGroup> = Vec::new();
         let still_running: Vec<SequenceGroup> = Vec::new();
 
-        for mut group in outputs
-            .to_prefill
-            .into_iter()
-            .chain(outputs.to_decode)
-        {
+        for mut group in outputs.to_prefill.into_iter().chain(outputs.to_decode) {
             match self.run_group_to_completion(&mut group) {
                 Ok(()) => done.push(group),
                 Err(e) => {
