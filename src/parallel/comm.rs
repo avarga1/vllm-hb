@@ -66,6 +66,7 @@ pub fn all_reduce(shards: &[Tensor], device: &Device) -> Result<Tensor> {
 /// # Errors
 ///
 /// Returns an error if `shards` is empty or any tensor operation fails.
+#[allow(dead_code)]
 pub fn all_gather(shards: &[Tensor], dim: usize, device: &Device) -> Result<Tensor> {
     match shards.len() {
         0 => bail!("all_gather: shard list is empty"),

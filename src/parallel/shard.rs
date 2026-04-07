@@ -82,6 +82,7 @@ pub fn row_shard(weight: &Tensor, rank: usize, world_size: usize) -> Result<Tens
 /// # Errors
 ///
 /// Returns an error if `out_features` is not evenly divisible by `world_size`.
+#[allow(dead_code)]
 pub fn bias_shard(bias: &Tensor, rank: usize, world_size: usize) -> Result<Tensor> {
     debug_assert!(world_size >= 1);
     let len = bias.dim(0)?;
@@ -96,12 +97,14 @@ pub fn bias_shard(bias: &Tensor, rank: usize, world_size: usize) -> Result<Tenso
 
 /// Number of output features owned by `rank` in a column-parallel split.
 #[inline]
+#[allow(dead_code)]
 pub fn column_chunk_size(out_features: usize, world_size: usize) -> usize {
     out_features / world_size
 }
 
 /// Number of input features owned by `rank` in a row-parallel split.
 #[inline]
+#[allow(dead_code)]
 pub fn row_chunk_size(in_features: usize, world_size: usize) -> usize {
     in_features / world_size
 }

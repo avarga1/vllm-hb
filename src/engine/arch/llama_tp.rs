@@ -56,6 +56,7 @@ pub struct LlamaTpConfig {
     pub num_attention_heads: usize,
     #[serde(default)]
     pub num_key_value_heads: usize, // 0 → same as num_attention_heads (MHA)
+    #[allow(dead_code)]
     pub vocab_size: usize,
     #[serde(default = "default_eps")]
     pub rms_norm_eps: f64,
@@ -253,11 +254,11 @@ impl RankState {
             let mut cache = self.kv_cache.lock();
             let (k_cache, v_cache) = &mut cache[layer];
             let k = match k_cache {
-                Some(prev) => Tensor::cat(&[prev.as_ref(), &k], 0)?,
+                Some(prev) => Tensor::cat(&[prev.clone(), k], 0)?,
                 None => k,
             };
             let v = match v_cache {
-                Some(prev) => Tensor::cat(&[prev.as_ref(), &v], 0)?,
+                Some(prev) => Tensor::cat(&[prev.clone(), v], 0)?,
                 None => v,
             };
             *k_cache = Some(k.clone());
@@ -390,21 +391,21 @@ impl TpLlamaBackend {
         let n = world.world_size();
 
         // Validate divisibility
-        if cfg.num_attention_heads % n != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(n) {
             bail!(
                 "num_attention_heads ({}) must be divisible by tensor_parallel_size ({})",
                 cfg.num_attention_heads,
                 n
             );
         }
-        if cfg.kv_heads() % n != 0 {
+        if !cfg.kv_heads().is_multiple_of(n) {
             bail!(
                 "num_key_value_heads ({}) must be divisible by tensor_parallel_size ({})",
                 cfg.kv_heads(),
                 n
             );
         }
-        if cfg.intermediate_size % n != 0 {
+        if !cfg.intermediate_size.is_multiple_of(n) {
             bail!(
                 "intermediate_size ({}) must be divisible by tensor_parallel_size ({})",
                 cfg.intermediate_size,
@@ -490,8 +491,6 @@ impl TpLlamaBackend {
     }
 
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
-        let n = self.world.world_size();
-
         // ── Embedding (replicated weight, same result on all ranks) ───────────
         let mut hidden: Vec<Tensor> = self
             .ranks
@@ -571,6 +570,7 @@ impl TpLlamaBackend {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn world_size(&self) -> usize {
         self.world.world_size()
     }

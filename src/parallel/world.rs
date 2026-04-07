@@ -72,7 +72,7 @@ impl TpWorld {
         }
 
         let devices = (0..world_size)
-            .map(|rank| Device::new_cuda(rank))
+            .map(Device::new_cuda)
             .collect::<candle_core::Result<Vec<_>>>()?;
 
         Ok(Self(Arc::new(Inner { devices })))
@@ -95,6 +95,7 @@ impl TpWorld {
     }
 
     /// Iterator over `(rank, device)` pairs.
+    #[allow(dead_code)]
     pub fn ranks(&self) -> impl Iterator<Item = (usize, &Device)> {
         self.0.devices.iter().enumerate()
     }
