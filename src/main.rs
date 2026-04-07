@@ -3,19 +3,33 @@
 //! A vLLM-compatible OpenAI API server written in pure Rust.
 //! No Python. No libtorch. No C++ interop. CUDA via cudarc.
 
+// ── Modules ───────────────────────────────────────────────────────────────────
+
+// Working
 mod bench;
-mod model;
+mod engine;
 mod sampling;
 mod server;
 mod tokenize;
 mod types;
 mod worker;
 
+// Roadmap stubs (declared so `cargo check` covers them)
+mod attention;
+mod parallel;
+mod scheduler;
+mod speculative;
+
+// ── Imports ───────────────────────────────────────────────────────────────────
+
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
+
+use engine::ModelConfig;
+use worker::WorkerHandle;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -45,7 +59,7 @@ struct ServeArgs {
     #[arg(long)]
     model: String,
 
-    /// Path to the tokenizer (defaults to --model).
+    /// Path to the tokenizer directory (defaults to --model).
     #[arg(long)]
     tokenizer: Option<String>,
 
@@ -64,6 +78,10 @@ struct ServeArgs {
     /// GPU memory utilisation fraction (0.0–1.0).
     #[arg(long, default_value_t = 0.90)]
     gpu_memory_utilization: f64,
+
+    /// Use BF16 weights (requires sm_80+ / Ampere GPU; falls back to F16).
+    #[arg(long)]
+    bf16: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -99,10 +117,11 @@ async fn serve(args: ServeArgs) -> Result<()> {
     );
 
     tracing::info!(model = %args.model, "Loading model weights");
-    let engine = model::Engine::load(model::ModelConfig {
+    let engine = engine::Engine::load(ModelConfig {
         model_path:             args.model.clone(),
         max_seq_len:            args.max_seq_len,
         gpu_memory_utilization: args.gpu_memory_utilization,
+        bf16:                   args.bf16,
     })?;
     tracing::info!(
         params = engine.param_count(),
@@ -112,7 +131,6 @@ async fn serve(args: ServeArgs) -> Result<()> {
         "Model ready"
     );
 
-    // Spin up the inference worker in a background task.
     let (worker, handle) = worker::Worker::new(engine, tokenizer.clone(), eos_tokens);
     tokio::spawn(worker.run());
 
