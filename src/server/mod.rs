@@ -17,20 +17,26 @@ pub mod handlers;
 pub mod metrics;
 pub mod sse;
 
-use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Result;
-use axum::{Router, routing::{get, post}};
-use tower_http::cors::CorsLayer;
+use axum::{
+    Router,
+    routing::{get, post},
+};
 use tokenizers::Tokenizer;
+use tower_http::cors::CorsLayer;
 
 use crate::worker::WorkerHandle;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
 pub struct AppState {
-    pub worker:     WorkerHandle,
-    pub tokenizer:  Tokenizer,
+    pub worker: WorkerHandle,
+    pub tokenizer: Tokenizer,
     pub model_name: String,
     pub model_path: String,
 }
@@ -40,9 +46,9 @@ pub struct AppState {
 pub async fn serve(state: Arc<AppState>, addr: &str) -> Result<()> {
     let app = Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models",           get(handlers::list_models))
-        .route("/health",              get(handlers::health))
-        .route("/metrics",             get(metrics::handler))
+        .route("/v1/models", get(handlers::list_models))
+        .route("/health", get(handlers::health))
+        .route("/metrics", get(metrics::handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

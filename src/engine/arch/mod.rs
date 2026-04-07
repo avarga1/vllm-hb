@@ -21,27 +21,27 @@ pub use qwen2::Qwen2Backend;
 
 pub(crate) enum Backend {
     Llama(LlamaBackend),
-    Mixtral(MixtralBackend),   // stub — see arch/mixtral.rs
-    Qwen2(Qwen2Backend),       // stub — see arch/qwen2.rs
-    Phi3(Phi3Backend),         // stub — see arch/phi3.rs
+    Mixtral(MixtralBackend), // stub — see arch/mixtral.rs
+    Qwen2(Qwen2Backend),     // stub — see arch/qwen2.rs
+    Phi3(Phi3Backend),       // stub — see arch/phi3.rs
 }
 
 impl Backend {
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         match self {
-            Self::Llama(m)   => m.forward(token_ids, seq_pos),
+            Self::Llama(m) => m.forward(token_ids, seq_pos),
             Self::Mixtral(m) => m.forward(token_ids, seq_pos),
-            Self::Qwen2(m)   => m.forward(token_ids, seq_pos),
-            Self::Phi3(m)    => m.forward(token_ids, seq_pos),
+            Self::Qwen2(m) => m.forward(token_ids, seq_pos),
+            Self::Phi3(m) => m.forward(token_ids, seq_pos),
         }
     }
 
     pub fn reset_cache(&self) -> Result<()> {
         match self {
-            Self::Llama(m)   => m.reset_cache(),
+            Self::Llama(m) => m.reset_cache(),
             Self::Mixtral(m) => m.reset_cache(),
-            Self::Qwen2(m)   => m.reset_cache(),
-            Self::Phi3(m)    => m.reset_cache(),
+            Self::Qwen2(m) => m.reset_cache(),
+            Self::Phi3(m) => m.reset_cache(),
         }
     }
 }

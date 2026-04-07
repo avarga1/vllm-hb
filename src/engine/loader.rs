@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use candle_core::{Device, Tensor};
 
 use super::arch::{Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend};
@@ -18,12 +18,12 @@ use super::dtype;
 /// identical regardless of architecture — callers never see candle types.
 pub struct Engine {
     pub config: ModelConfig,
-    backend:    Backend,
+    backend: Backend,
     pub device: Device,
     // Shared metadata for external introspection.
-    vocab_size:        usize,
-    num_layers:        usize,
-    hidden_size:       usize,
+    vocab_size: usize,
+    num_layers: usize,
+    hidden_size: usize,
     intermediate_size: usize,
 }
 
@@ -32,13 +32,13 @@ impl Engine {
     /// `.safetensors` files in HuggingFace format).
     pub fn load(config: ModelConfig) -> Result<Self> {
         let model_path = Path::new(&config.model_path);
-        let device     = Device::cuda_if_available(0)?;
+        let device = Device::cuda_if_available(0)?;
         tracing::info!(device = ?device, "Compute device");
 
         let dtype = dtype::resolve(&device, config.bf16);
 
         let config_path = model_path.join("config.json");
-        let config_str  = std::fs::read_to_string(&config_path)
+        let config_str = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Reading {}", config_path.display()))?;
 
         let meta: HfMeta = serde_json::from_str(&config_str)
@@ -72,12 +72,8 @@ impl Engine {
             "mixtral" => {
                 Backend::Mixtral(MixtralBackend::load(&config_str, &shards, dtype, &device)?)
             }
-            "qwen2" => {
-                Backend::Qwen2(Qwen2Backend::load(&config_str, &shards, dtype, &device)?)
-            }
-            "phi3" => {
-                Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?)
-            }
+            "qwen2" => Backend::Qwen2(Qwen2Backend::load(&config_str, &shards, dtype, &device)?),
+            "phi3" => Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?),
             other => bail!(
                 "Unsupported model_type: {other:?}. \
                  Supported: llama, mistral. \
@@ -90,9 +86,9 @@ impl Engine {
             config,
             backend,
             device,
-            vocab_size:        meta.vocab_size,
-            num_layers:        meta.num_hidden_layers,
-            hidden_size:       meta.hidden_size,
+            vocab_size: meta.vocab_size,
+            num_layers: meta.num_hidden_layers,
+            hidden_size: meta.hidden_size,
             intermediate_size: meta.intermediate_size,
         })
     }
@@ -111,12 +107,16 @@ impl Engine {
 
     pub fn param_count(&self) -> usize {
         let attn = 4 * self.hidden_size * self.hidden_size;
-        let ffn  = 3 * self.hidden_size * self.intermediate_size;
+        let ffn = 3 * self.hidden_size * self.intermediate_size;
         self.vocab_size * self.hidden_size
             + self.num_layers * (attn + ffn)
             + self.vocab_size * self.hidden_size
     }
 
-    pub fn num_layers(&self) -> usize { self.num_layers }
-    pub fn vocab_size(&self) -> usize { self.vocab_size }
+    pub fn num_layers(&self) -> usize {
+        self.num_layers
+    }
+    pub fn vocab_size(&self) -> usize {
+        self.vocab_size
+    }
 }

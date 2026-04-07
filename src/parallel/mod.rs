@@ -21,4 +21,6 @@ pub mod shard;
 
 /// World size — number of GPUs used for tensor parallelism.
 /// Always 1 until multi-GPU is implemented.
-pub fn world_size() -> usize { 1 }
+pub fn world_size() -> usize {
+    1
+}

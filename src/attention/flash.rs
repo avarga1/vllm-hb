@@ -38,7 +38,11 @@
 #![allow(dead_code)]
 
 #[cfg(feature = "flash-attn")]
-pub fn is_available() -> bool { true }
+pub fn is_available() -> bool {
+    true
+}
 
 #[cfg(not(feature = "flash-attn"))]
-pub fn is_available() -> bool { false }
+pub fn is_available() -> bool {
+    false
+}

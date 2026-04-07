@@ -20,7 +20,11 @@ use candle_core::{DType, Device};
 pub fn resolve(device: &Device, bf16: bool) -> DType {
     match device {
         Device::Cuda(_) => {
-            if bf16 { DType::BF16 } else { DType::F16 }
+            if bf16 {
+                DType::BF16
+            } else {
+                DType::F16
+            }
         }
         _ => DType::F32,
     }

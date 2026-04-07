@@ -11,22 +11,22 @@ use axum::{
     Json,
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response, Sse},
     response::sse::KeepAlive,
+    response::{IntoResponse, Response, Sse},
 };
 use serde_json::json;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use super::sse as sse_mod;
+use super::{AppState, unix_now};
+use crate::tokenize;
 use crate::types::openai::{
-    ChatCompletionResponse, ChatMessage, Choice, Usage, ChatCompletionRequest,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage,
 };
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, SamplingParams, WorkItem,
 };
-use crate::tokenize;
-use super::{AppState, unix_now};
-use super::sse as sse_mod;
 
 // ── Liveness ──────────────────────────────────────────────────────────────────
 
@@ -52,26 +52,26 @@ pub async fn list_models(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
-    Json(req):    Json<ChatCompletionRequest>,
+    Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
     let prompt = match tokenize::apply_chat_template(&state.model_path, &req.messages) {
-        Ok(p)  => p,
+        Ok(p) => p,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
 
     let token_ids = match tokenize::encode(&state.tokenizer, &prompt) {
         Ok(ids) => ids,
-        Err(e)  => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<GenerationEvent>();
     let work = WorkItem {
-        id:        Uuid::new_v4().to_string(),
+        id: Uuid::new_v4().to_string(),
         token_ids,
         params: SamplingParams {
-            max_tokens:  req.max_tokens,
+            max_tokens: req.max_tokens,
             temperature: req.temperature,
-            top_p:       req.top_p,
+            top_p: req.top_p,
         },
         result_tx: event_tx,
     };
@@ -93,18 +93,21 @@ pub async fn chat_completions(
 
 async fn collect_response(
     mut rx: mpsc::UnboundedReceiver<GenerationEvent>,
-    model:  String,
+    model: String,
 ) -> impl IntoResponse {
     let mut token_texts = Vec::<String>::new();
-    let mut finish      = FinishReason::Length;
-    let mut stats       = GenerationStats::default();
+    let mut finish = FinishReason::Length;
+    let mut stats = GenerationStats::default();
 
     while let Some(evt) = rx.recv().await {
         match evt {
             GenerationEvent::Token(t) => token_texts.push(t.text),
-            GenerationEvent::Finished { finish_reason, stats: s } => {
+            GenerationEvent::Finished {
+                finish_reason,
+                stats: s,
+            } => {
                 finish = finish_reason;
-                stats  = s;
+                stats = s;
                 break;
             }
             GenerationEvent::Error(e) => {
@@ -114,27 +117,35 @@ async fn collect_response(
     }
 
     Json(ChatCompletionResponse {
-        id:      format!("chatcmpl-{}", Uuid::new_v4()),
-        object:  "chat.completion",
+        id: format!("chatcmpl-{}", Uuid::new_v4()),
+        object: "chat.completion",
         created: unix_now(),
         model,
         choices: vec![Choice {
-            index:         0,
-            message:       ChatMessage { role: "assistant".into(), content: token_texts.join("") },
+            index: 0,
+            message: ChatMessage {
+                role: "assistant".into(),
+                content: token_texts.join(""),
+            },
             finish_reason: finish.as_str(),
         }],
         usage: Usage {
-            prompt_tokens:     stats.prompt_tokens,
+            prompt_tokens: stats.prompt_tokens,
             completion_tokens: stats.completion_tokens,
-            total_tokens:      stats.prompt_tokens + stats.completion_tokens,
+            total_tokens: stats.prompt_tokens + stats.completion_tokens,
         },
-    }).into_response()
+    })
+    .into_response()
 }
 
 // ── Error helper ──────────────────────────────────────────────────────────────
 
 pub fn error_response(status: StatusCode, message: &str) -> Response {
-    (status, Json(json!({
-        "error": { "message": message, "type": "server_error" }
-    }))).into_response()
+    (
+        status,
+        Json(json!({
+            "error": { "message": message, "type": "server_error" }
+        })),
+    )
+        .into_response()
 }

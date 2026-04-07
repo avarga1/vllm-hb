@@ -22,7 +22,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle_core::{DType, Device, Tensor};
 
 pub struct MixtralBackend;
@@ -30,9 +30,9 @@ pub struct MixtralBackend;
 impl MixtralBackend {
     pub fn load(
         _config_str: &str,
-        _shards:     &[std::path::PathBuf],
-        _dtype:      DType,
-        _device:     &Device,
+        _shards: &[std::path::PathBuf],
+        _dtype: DType,
+        _device: &Device,
     ) -> Result<Self> {
         bail!(
             "Mixtral is not yet supported. \

@@ -33,7 +33,7 @@ struct TokenizerConfig {
 
 pub fn detect(model_path: &str) -> Option<TemplateDialect> {
     let path = Path::new(model_path).join("tokenizer_config.json");
-    let raw  = std::fs::read_to_string(path).ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
     let cfg: TokenizerConfig = serde_json::from_str(&raw).ok()?;
     let tmpl = cfg.chat_template?;
 
@@ -52,8 +52,8 @@ pub fn detect(model_path: &str) -> Option<TemplateDialect> {
 
 pub fn render(dialect: TemplateDialect, messages: &[ChatMessage]) -> String {
     match dialect {
-        TemplateDialect::Llama3    => render_llama3(messages),
-        TemplateDialect::ChatML    => render_chatml(messages),
+        TemplateDialect::Llama3 => render_llama3(messages),
+        TemplateDialect::ChatML => render_chatml(messages),
         TemplateDialect::MistralV1 => render_mistral_v1(messages),
     }
 }
@@ -73,7 +73,10 @@ fn render_llama3(messages: &[ChatMessage]) -> String {
 fn render_chatml(messages: &[ChatMessage]) -> String {
     let mut out = String::new();
     for msg in messages {
-        out.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", msg.role, msg.content));
+        out.push_str(&format!(
+            "<|im_start|>{}\n{}<|im_end|>\n",
+            msg.role, msg.content
+        ));
     }
     out.push_str("<|im_start|>assistant\n");
     out
@@ -92,7 +95,10 @@ fn render_mistral_v1(messages: &[ChatMessage]) -> String {
         };
 
         if i < messages.len() && messages[i].role == "user" {
-            out.push_str(&format!("[INST] {}{} [/INST]", sys_prefix, messages[i].content));
+            out.push_str(&format!(
+                "[INST] {}{} [/INST]",
+                sys_prefix, messages[i].content
+            ));
             i += 1;
         }
         if i < messages.len() && messages[i].role == "assistant" {

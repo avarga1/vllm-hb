@@ -89,10 +89,7 @@ struct ServeArgs {
 #[tokio::main]
 async fn main() -> Result<()> {
     fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive("vllm_hb=info".parse()?)
-        )
+        .with_env_filter(EnvFilter::from_default_env().add_directive("vllm_hb=info".parse()?))
         .json()
         .init();
 
@@ -108,7 +105,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let tokenizer_path = args.tokenizer.as_deref().unwrap_or(&args.model);
 
     tracing::info!(model = %args.model, "Loading tokenizer");
-    let tokenizer  = tokenize::load(tokenizer_path)?;
+    let tokenizer = tokenize::load(tokenizer_path)?;
     let eos_tokens = tokenize::load_eos_tokens(&args.model)?;
     tracing::info!(
         vocab_size = tokenizer.get_vocab_size(true),
@@ -118,10 +115,10 @@ async fn serve(args: ServeArgs) -> Result<()> {
 
     tracing::info!(model = %args.model, "Loading model weights");
     let engine = engine::Engine::load(ModelConfig {
-        model_path:             args.model.clone(),
-        max_seq_len:            args.max_seq_len,
+        model_path: args.model.clone(),
+        max_seq_len: args.max_seq_len,
         gpu_memory_utilization: args.gpu_memory_utilization,
-        bf16:                   args.bf16,
+        bf16: args.bf16,
     })?;
     tracing::info!(
         params = engine.param_count(),
@@ -134,7 +131,8 @@ async fn serve(args: ServeArgs) -> Result<()> {
     let (worker, handle) = worker::Worker::new(engine, tokenizer.clone(), eos_tokens);
     tokio::spawn(worker.run());
 
-    let model_name = args.model
+    let model_name = args
+        .model
         .trim_end_matches('/')
         .rsplit('/')
         .next()
@@ -142,7 +140,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         .to_string();
 
     let state = Arc::new(server::AppState {
-        worker:     handle,
+        worker: handle,
         tokenizer,
         model_name,
         model_path: args.model,

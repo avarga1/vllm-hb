@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
-    pub model_path:             String,
-    pub max_seq_len:            usize,
+    pub model_path: String,
+    pub max_seq_len: usize,
     pub gpu_memory_utilization: f64,
     /// Force BF16 weights (requires sm_80+ / Ampere GPU).
     /// Falls back to F16 on older hardware when false.
@@ -24,10 +24,10 @@ pub struct ModelConfig {
 /// — each arch module does its own full parse.
 #[derive(Deserialize)]
 pub struct HfMeta {
-    pub model_type:          String,
-    pub vocab_size:          usize,
-    pub hidden_size:         usize,
-    pub intermediate_size:   usize,
-    pub num_hidden_layers:   usize,
+    pub model_type: String,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
 }

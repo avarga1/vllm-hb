@@ -17,12 +17,12 @@ use crate::types::pipeline::GenerationEvent;
 /// 2. One delta per token
 /// 3. A final `[DONE]` sentinel
 pub fn build_stream(
-    rx:    mpsc::UnboundedReceiver<GenerationEvent>,
+    rx: mpsc::UnboundedReceiver<GenerationEvent>,
     model: String,
 ) -> impl futures_core::stream::Stream<Item = Result<Event, std::convert::Infallible>> {
     use tokio_stream::StreamExt as _;
 
-    let now    = super::unix_now();
+    let now = super::unix_now();
     let gen_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
 
     // Opening chunk: role assignment.
@@ -32,15 +32,15 @@ pub fn build_stream(
     ));
 
     let gen_id_clone = gen_id.clone();
-    let body = UnboundedReceiverStream::new(rx).filter_map(move |evt| {
-        match evt {
-            GenerationEvent::Token(t) => {
-                let chunk = make_chunk(&gen_id_clone, &model, now, None, Some(t.text), None);
-                Some(Ok(Event::default().data(serde_json::to_string(&chunk).unwrap())))
-            }
-            GenerationEvent::Finished { .. } | GenerationEvent::Error(_) => {
-                Some(Ok(Event::default().data("[DONE]")))
-            }
+    let body = UnboundedReceiverStream::new(rx).filter_map(move |evt| match evt {
+        GenerationEvent::Token(t) => {
+            let chunk = make_chunk(&gen_id_clone, &model, now, None, Some(t.text), None);
+            Some(Ok(
+                Event::default().data(serde_json::to_string(&chunk).unwrap())
+            ))
+        }
+        GenerationEvent::Finished { .. } | GenerationEvent::Error(_) => {
+            Some(Ok(Event::default().data("[DONE]")))
         }
     });
 
@@ -50,21 +50,21 @@ pub fn build_stream(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn make_chunk(
-    id:            &str,
-    model:         &str,
-    created:       u64,
-    role:          Option<&'static str>,
-    content:       Option<String>,
+    id: &str,
+    model: &str,
+    created: u64,
+    role: Option<&'static str>,
+    content: Option<String>,
     finish_reason: Option<&'static str>,
 ) -> ChatCompletionChunk {
     ChatCompletionChunk {
-        id:      id.to_string(),
-        object:  "chat.completion.chunk",
+        id: id.to_string(),
+        object: "chat.completion.chunk",
         created,
-        model:   model.to_string(),
+        model: model.to_string(),
         choices: vec![ChunkChoice {
-            index:         0,
-            delta:         Delta { role, content },
+            index: 0,
+            delta: Delta { role, content },
             finish_reason,
         }],
     }

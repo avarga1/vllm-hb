@@ -12,7 +12,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle_core::{DType, Device, Tensor};
 
 pub struct Qwen2Backend;
@@ -20,9 +20,9 @@ pub struct Qwen2Backend;
 impl Qwen2Backend {
     pub fn load(
         _config_str: &str,
-        _shards:     &[std::path::PathBuf],
-        _dtype:      DType,
-        _device:     &Device,
+        _shards: &[std::path::PathBuf],
+        _dtype: DType,
+        _device: &Device,
     ) -> Result<Self> {
         bail!(
             "Qwen2 is not yet supported. \

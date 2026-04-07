@@ -9,7 +9,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use candle_core::{DType, Device, Tensor};
 
 pub struct Phi3Backend;
@@ -17,9 +17,9 @@ pub struct Phi3Backend;
 impl Phi3Backend {
     pub fn load(
         _config_str: &str,
-        _shards:     &[std::path::PathBuf],
-        _dtype:      DType,
-        _device:     &Device,
+        _shards: &[std::path::PathBuf],
+        _dtype: DType,
+        _device: &Device,
     ) -> Result<Self> {
         bail!(
             "Phi-3 is not yet supported. \

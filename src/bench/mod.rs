@@ -36,7 +36,10 @@ pub struct BenchArgs {
     pub max_tokens: usize,
 
     /// Prompt to send (same prompt for all requests).
-    #[arg(long, default_value = "Explain the theory of general relativity in simple terms.")]
+    #[arg(
+        long,
+        default_value = "Explain the theory of general relativity in simple terms."
+    )]
     pub prompt: String,
 
     /// Number of concurrent requests (1 = sequential; >1 requires continuous
