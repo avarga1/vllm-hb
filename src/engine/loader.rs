@@ -11,6 +11,7 @@ use super::arch::{
 };
 use super::config::{HfMeta, ModelConfig};
 use super::dtype;
+use super::kv_cache::PerSeqCache;
 use crate::parallel::TpWorld;
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -121,12 +122,37 @@ impl Engine {
 
     // ── Compute ───────────────────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         self.backend.forward(token_ids, seq_pos)
     }
 
+    #[allow(dead_code)]
     pub fn reset_cache(&self) -> Result<()> {
         self.backend.reset_cache()
+    }
+
+    // ── Per-sequence cache API ────────────────────────────────────────────────
+
+    /// Allocate a fresh KV cache for one sequence.
+    ///
+    /// Call once when a sequence is admitted; pass the returned cache to
+    /// every subsequent `forward_with_cache` call for that sequence.
+    pub fn create_kv_cache(&self) -> Result<PerSeqCache> {
+        self.backend.create_kv_cache()
+    }
+
+    /// Run one forward step with an externally-owned per-sequence cache.
+    ///
+    /// Replaces `forward` + `reset_cache` in the continuous-batching worker.
+    /// The cache is updated in place; pass the same instance on every step.
+    pub fn forward_with_cache(
+        &self,
+        token_ids: &[u32],
+        seq_pos: usize,
+        cache: &mut PerSeqCache,
+    ) -> Result<Tensor> {
+        self.backend.forward_with_cache(token_ids, seq_pos, cache)
     }
 
     // ── Metadata ──────────────────────────────────────────────────────────────

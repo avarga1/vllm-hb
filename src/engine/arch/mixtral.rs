@@ -49,4 +49,17 @@ impl MixtralBackend {
     pub fn reset_cache(&self) -> Result<()> {
         unreachable!("MixtralBackend::load always fails")
     }
+
+    pub fn create_kv_cache(&self) -> Vec<Option<(candle_core::Tensor, candle_core::Tensor)>> {
+        unreachable!("MixtralBackend::load always fails")
+    }
+
+    pub fn forward_with_cache(
+        &self,
+        _token_ids: &[u32],
+        _seq_pos: usize,
+        _cache: &mut Vec<Option<(candle_core::Tensor, candle_core::Tensor)>>,
+    ) -> Result<Tensor> {
+        unreachable!("MixtralBackend::load always fails")
+    }
 }
