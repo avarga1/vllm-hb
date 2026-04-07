@@ -29,7 +29,7 @@ impl LlamaBackend {
     ) -> Result<Self> {
         let llama_cfg: candle_llama::LlamaConfig =
             serde_json::from_str(config_str).context("Parsing config.json as LlamaConfig")?;
-        let llama_cfg = llama_cfg.into_config(false);
+        let llama_cfg = llama_cfg.into_config(cfg!(feature = "flash-attn"));
 
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(shards, dtype, device)? };
 

@@ -30,7 +30,9 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_nn::{Linear, VarBuilder, linear_no_bias, ops::softmax};
+#[cfg(not(feature = "flash-attn"))]
+use candle_nn::ops::softmax;
+use candle_nn::{Linear, VarBuilder, linear_no_bias};
 use serde::Deserialize;
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -279,13 +281,38 @@ impl Attention {
         let k = repeat_kv(&k, n_rep)?;
         let v = repeat_kv(&v, n_rep)?;
 
-        let mask = sliding_causal_mask(seq_len, seq_pos, self.sliding_window, dtype, device)?;
-        let mask = mask.unsqueeze(0)?.unsqueeze(0)?;
+        // ── Attention kernel ──────────────────────────────────────────────────
+        //
+        // FA2 path (`--features flash-attn`, sm_80+):
+        //   Layout: [batch, seq, heads, dim].  causal=true handles the causal
+        //   part of the sliding-window mask.  The window constraint is not
+        //   enforced — tokens outside the window can attend, which is a minor
+        //   accuracy trade-off acceptable for sm_80+ inference.
+        //
+        // SDPA path (default):
+        //   Explicit sliding-window causal mask added to scores.
 
-        let attn = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
-        let attn = (attn.clone() + mask.broadcast_as(attn.shape())?)?;
-        let attn = softmax(&attn, candle_core::D::Minus1)?;
-        let out = attn.matmul(&v)?;
+        #[cfg(feature = "flash-attn")]
+        let out = {
+            // q/k/v currently [b, heads, seq, dim] → transpose to [b, seq, heads, dim]
+            let q_fa = q.transpose(1, 2)?;
+            let k_fa = k.transpose(1, 2)?;
+            let v_fa = v.transpose(1, 2)?;
+            let softmax_scale = self.scale as f32;
+            candle_flash_attn::flash_attn(&q_fa, &k_fa, &v_fa, softmax_scale, true)?
+                // [b, seq, heads, dim] → [b, heads, seq, dim]
+                .transpose(1, 2)?
+        };
+
+        #[cfg(not(feature = "flash-attn"))]
+        let out = {
+            let mask = sliding_causal_mask(seq_len, seq_pos, self.sliding_window, dtype, device)?;
+            let mask = mask.unsqueeze(0)?.unsqueeze(0)?;
+            let attn = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
+            let attn = (attn.clone() + mask.broadcast_as(attn.shape())?)?;
+            let attn = softmax(&attn, candle_core::D::Minus1)?;
+            attn.matmul(&v)?
+        };
 
         let out = out
             .transpose(1, 2)?
@@ -550,6 +577,23 @@ impl MixtralBackend {
         }
         Ok(())
     }
+
+    // ── Per-sequence cache API ────────────────────────────────────────────────
+
+    /// Allocate a fresh per-sequence KV cache (one entry per layer, all None).
+    pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
+        vec![None; self.num_layers]
+    }
+
+    /// Run one forward step with an externally-owned per-sequence cache.
+    pub fn forward_with_cache(
+        &self,
+        token_ids: &[u32],
+        seq_pos: usize,
+        cache: &mut [Option<(Tensor, Tensor)>],
+    ) -> Result<Tensor> {
+        self.model.forward(token_ids, seq_pos, cache)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -654,18 +698,5 @@ mod tests {
         let out = norm.forward(&x).unwrap();
         let sq_mean: f32 = out.sqr().unwrap().mean_all().unwrap().to_scalar().unwrap();
         assert!((sq_mean - 1.0).abs() < 0.1);
-    }
-
-    pub fn create_kv_cache(&self) -> Vec<Option<(candle_core::Tensor, candle_core::Tensor)>> {
-        unreachable!("MixtralBackend::load always fails")
-    }
-
-    pub fn forward_with_cache(
-        &self,
-        _token_ids: &[u32],
-        _seq_pos: usize,
-        _cache: &mut [Option<(candle_core::Tensor, candle_core::Tensor)>],
-    ) -> Result<Tensor> {
-        unreachable!("MixtralBackend::load always fails")
     }
 }

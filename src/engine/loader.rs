@@ -55,6 +55,14 @@ impl Engine {
         let device = world.device(0).clone();
         tracing::info!(device = ?device, "Compute device");
 
+        if cfg!(feature = "flash-attn") {
+            tracing::info!("Flash Attention 2 enabled (sm_80+)");
+        } else {
+            tracing::info!(
+                "Using SDPA attention (build with --features flash-attn for FA2 on sm_80+)"
+            );
+        }
+
         let dtype = dtype::resolve(&device, config.bf16);
 
         let config_path = model_path.join("config.json");
