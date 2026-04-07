@@ -101,6 +101,7 @@ impl SequenceGroup {
         Self { request_id, seqs, arrival_time: Instant::now() }
     }
 
+    #[allow(dead_code)]
     pub fn max_len(&self) -> usize {
         self.seqs.iter().map(|s| s.len()).max().unwrap_or(0)
     }

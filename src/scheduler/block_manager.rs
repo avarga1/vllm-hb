@@ -134,6 +134,7 @@ impl BlockManager {
     // ── Allocation ────────────────────────────────────────────────────────────
 
     /// `true` if enough free GPU blocks exist to run this sequence group.
+    #[allow(dead_code)]
     pub fn can_allocate(&self, group: &SequenceGroup) -> bool {
         let needed = group.num_logical_blocks(self.block_size);
         needed <= self.gpu.num_free()
@@ -299,6 +300,7 @@ impl BlockManager {
 
     // ── Introspection ─────────────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn get_block_table(&self, seq_id: u64) -> Option<&BlockTable> {
         self.block_tables.get(&seq_id)
     }
