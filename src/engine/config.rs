@@ -7,6 +7,9 @@ use serde::Deserialize;
 
 // ── Runtime config ────────────────────────────────────────────────────────────
 
+// max_seq_len and gpu_memory_utilization are stored for future use by the
+// paged-KV-cache scheduler (scheduler/block_manager.rs).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
     pub model_path: String,

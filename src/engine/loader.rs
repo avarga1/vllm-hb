@@ -17,6 +17,7 @@ use super::dtype;
 /// The public API (`forward`, `reset_cache`, metadata accessors) is
 /// identical regardless of architecture — callers never see candle types.
 pub struct Engine {
+    #[allow(dead_code)] // stored for future scheduler use (max_seq_len, gpu_memory_utilization)
     pub config: ModelConfig,
     backend: Backend,
     pub device: Device,

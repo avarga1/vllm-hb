@@ -31,6 +31,7 @@ impl Default for SamplingParams {
 /// A single token emitted during streaming generation.
 #[derive(Debug, Clone)]
 pub struct TokenEvent {
+    #[allow(dead_code)] // id is emitted on the channel; currently only text is read by handlers
     pub id: u32,
     pub text: String,
 }

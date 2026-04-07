@@ -19,6 +19,9 @@ pub use qwen2::Qwen2Backend;
 
 // ── Backend enum ──────────────────────────────────────────────────────────────
 
+// Stub variants (Mixtral, Qwen2, Phi3) are zero-sized; LlamaBackend is large.
+// This disparity is intentional — stubs will grow when implemented.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Backend {
     Llama(LlamaBackend),
     Mixtral(MixtralBackend), // stub — see arch/mixtral.rs

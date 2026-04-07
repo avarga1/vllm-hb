@@ -4,10 +4,9 @@
 //! the --dtype / --bf16 CLI flag has a single place to land.
 //!
 //! # Hardware notes
-//! - V100  (sm_70): no native BF16 — emulates in software, ~3× slower.
-//!                  Stick to F16.
-//! - A100  (sm_80): native BF16 + F16, both fast.
-//! - H100  (sm_90): native BF16 + F16 + FP8.
+//! - V100 (sm_70): no native BF16 — emulates in software, ~3× slower. Stick to F16.
+//! - A100 (sm_80): native BF16 + F16, both fast.
+//! - H100 (sm_90): native BF16 + F16 + FP8.
 //! - RTX 3090+ (sm_86): native BF16.
 //!
 //! Rule: bf16=true is ignored (falls back to F16) below sm_80.

@@ -30,6 +30,7 @@ use axum::{
 use tokenizers::Tokenizer;
 use tower_http::cors::CorsLayer;
 
+#[allow(unused_imports)] // WorkerHandle is used as a field type in AppState
 use crate::worker::WorkerHandle;
 
 // ── App state ─────────────────────────────────────────────────────────────────
