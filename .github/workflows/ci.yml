@@ -72,6 +72,12 @@ jobs:
     if: |
       github.ref == 'refs/heads/main' ||
       contains(github.event.pull_request.labels.*.name, 'gpu-test')
+    env:
+      CUDA_ROOT: /home/mrfifty6/cuda-12.6
+      CUDA_HOME: /home/mrfifty6/cuda-12.6
+      CUDA_PATH: /home/mrfifty6/cuda-12.6
+      PATH: /home/mrfifty6/cuda-12.6/bin:/home/mrfifty6/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      LD_LIBRARY_PATH: /home/mrfifty6/cuda-12.6/lib64
     steps:
       - uses: actions/checkout@v4
 
@@ -80,6 +86,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Verify CUDA toolkit
+        run: nvcc --version && nvidia-smi
 
       - name: Build (CUDA)
         run: cargo build --release
