@@ -29,7 +29,8 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
 use engine::ModelConfig;
-#[allow(unused_imports)] // WorkerHandle is the type of AppState::worker; kept for documentation
+#[allow(unused_imports)]
+// WorkerHandle is the type of AppState::worker; kept for documentation
 use worker::WorkerHandle;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────

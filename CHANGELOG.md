@@ -11,7 +11,33 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.2.0] — 2025-04-07
+## [0.3.0] — 2026-04-07
+
+### Added
+- Multi-architecture support — Mixtral, Qwen2, Phi3 backends (architecture detection
+  from `config.json`; forward pass stubs ready for wiring)
+- Flash attention + SDPA attention backends (`attention/flash.rs`, `attention/sdpa.rs`)
+- Scheduler groundwork — `BlockManager`, `SequenceGroup`, FCFS policy (`scheduler/`)
+- Tensor parallel stubs — `comm.rs`, `shard.rs` (`parallel/`)
+- Speculative decoding skeleton (`speculative.rs`)
+- Concurrent benchmark mode (`bench/concurrent.rs`) alongside existing sequential bench
+- Real V100 benchmark results in README
+- Security audit CI job (`cargo audit`) — fixes RUSTSEC-2026-0049
+
+### Changed
+- Full module restructure — flat `src/` split into `engine/`, `server/`, `scheduler/`,
+  `attention/`, `parallel/`, `bench/`, `tokenize/`, `types/`, `sampling/`, `worker/`
+- Server split into `handlers.rs`, `sse.rs`, `metrics.rs`
+- Types split into `openai.rs`, `pipeline.rs`
+
+### Fixed
+- CUDA feature gating — `candle-*` crates now optional behind `cuda` feature flag;
+  `--no-default-features` builds clean on any machine without CUDA toolkit
+- All `clippy -D warnings` errors resolved for CPU build
+
+---
+
+## [0.2.0] — 2026-04-07
 
 ### Added
 - OpenAI-compatible `/v1/chat/completions` endpoint — streaming and non-streaming
