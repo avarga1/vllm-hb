@@ -84,7 +84,7 @@ impl Sequence {
     /// Slots used in the last (possibly partial) block.
     pub fn last_block_num_filled(&self, block_size: usize) -> usize {
         let rem = self.len() % block_size;
-        if rem == 0 && self.len() > 0 {
+        if rem == 0 && !self.is_empty() {
             block_size
         } else {
             rem

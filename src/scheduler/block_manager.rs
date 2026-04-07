@@ -200,10 +200,10 @@ impl BlockManager {
                 return false;
             }
             // Copy-on-write: if last block is shared, need a free block to copy into.
-            if let Some(&last_id) = table.blocks.last() {
-                if self.gpu.ref_count(last_id) > 1 && self.gpu.num_free() == 0 {
-                    return false;
-                }
+            if table.blocks.last().is_some_and(|&id| {
+                self.gpu.ref_count(id) > 1 && self.gpu.num_free() == 0
+            }) {
+                return false;
             }
         }
         true

@@ -238,7 +238,7 @@ impl Scheduler {
         }
 
         // Move current running groups to to_decode.
-        out.to_decode.extend(self.running.drain(..));
+        out.to_decode.append(&mut self.running);
 
         out
     }
