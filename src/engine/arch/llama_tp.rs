@@ -43,7 +43,7 @@ use parking_lot::Mutex;
 use rayon::prelude::*;
 use serde::Deserialize;
 
-use crate::parallel::{TpWorld, all_reduce, column_shard, row_shard};
+use crate::parallel::{TpWorld, column_shard, row_shard};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -517,7 +517,7 @@ impl TpLlamaBackend {
                 .collect::<Result<_>>()?;
 
             // All-reduce attention → identical on all ranks
-            let attn_out = all_reduce(&attn_partials, self.world.device(0))?;
+            let attn_out = self.world.all_reduce(attn_partials)?;
 
             // Residual + post-attn norm
             let post_normed: Vec<Tensor> = self
@@ -547,7 +547,7 @@ impl TpLlamaBackend {
                 .collect::<Result<_>>()?;
 
             // All-reduce FFN → identical on all ranks
-            let ffn_out = all_reduce(&ffn_partials, self.world.device(0))?;
+            let ffn_out = self.world.all_reduce(ffn_partials)?;
 
             // Residual
             hidden = self
