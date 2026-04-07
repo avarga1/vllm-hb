@@ -18,6 +18,11 @@ pub struct ModelConfig {
     /// Force BF16 weights (requires sm_80+ / Ampere GPU).
     /// Falls back to F16 on older hardware when false.
     pub bf16: bool,
+    /// Number of GPUs for tensor parallelism.
+    ///
+    /// `1` = single-GPU (default, no inter-GPU communication).
+    /// `N > 1` = column/row-parallel sharding across N CUDA devices.
+    pub tensor_parallel_size: usize,
 }
 
 // ── HuggingFace config.json ───────────────────────────────────────────────────

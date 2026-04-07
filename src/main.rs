@@ -84,6 +84,10 @@ struct ServeArgs {
     /// Use BF16 weights (requires sm_80+ / Ampere GPU; falls back to F16).
     #[arg(long)]
     bf16: bool,
+
+    /// Number of GPUs for tensor parallelism (default: 1 = single GPU).
+    #[arg(long, default_value_t = 1)]
+    tensor_parallel_size: usize,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -121,6 +125,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         max_seq_len: args.max_seq_len,
         gpu_memory_utilization: args.gpu_memory_utilization,
         bf16: args.bf16,
+        tensor_parallel_size: args.tensor_parallel_size,
     })?;
     tracing::info!(
         params = engine.param_count(),

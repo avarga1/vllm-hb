@@ -9,6 +9,7 @@ use candle_core::{Device, Tensor};
 use super::arch::{Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend};
 use super::config::{HfMeta, ModelConfig};
 use super::dtype;
+use crate::parallel::TpWorld;
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,24 @@ impl Engine {
     /// `.safetensors` files in HuggingFace format).
     pub fn load(config: ModelConfig) -> Result<Self> {
         let model_path = Path::new(&config.model_path);
-        let device = Device::cuda_if_available(0)?;
+
+        // Build tensor-parallel world.  world_size=1 is always a no-op.
+        let world = TpWorld::new(config.tensor_parallel_size)?;
+        if world.is_single() {
+            tracing::info!(
+                tensor_parallel_size = 1,
+                "Tensor parallelism disabled (single GPU)"
+            );
+        } else {
+            tracing::info!(
+                tensor_parallel_size = world.world_size(),
+                "Tensor parallelism enabled"
+            );
+        }
+
+        // For now, always run on rank-0 device.
+        // Future: per-rank workers each load their weight shard.
+        let device = world.device(0).clone();
         tracing::info!(device = ?device, "Compute device");
 
         let dtype = dtype::resolve(&device, config.bf16);
