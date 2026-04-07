@@ -6,7 +6,9 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use candle_core::{Device, Tensor};
 
-use super::arch::{Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend};
+use super::arch::{
+    Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend, TpLlamaBackend,
+};
 use super::config::{HfMeta, ModelConfig};
 use super::dtype;
 use crate::parallel::TpWorld;
@@ -49,8 +51,6 @@ impl Engine {
             );
         }
 
-        // For now, always run on rank-0 device.
-        // Future: per-rank workers each load their weight shard.
         let device = world.device(0).clone();
         tracing::info!(device = ?device, "Compute device");
 
@@ -84,18 +84,25 @@ impl Engine {
         }
         tracing::info!(shards = shards.len(), dtype = ?dtype, "Loading weights");
 
-        let backend = match meta.model_type.as_str() {
-            "llama" | "mistral" => {
+        let backend = match (meta.model_type.as_str(), world.is_single()) {
+            // TP path: multi-GPU Llama with sharded weights
+            ("llama" | "mistral", false) => {
+                Backend::LlamaTp(TpLlamaBackend::load(&config_str, &shards, dtype, world)?)
+            }
+            // Single-GPU Llama (uses candle_transformers for full model)
+            ("llama" | "mistral", true) => {
                 Backend::Llama(LlamaBackend::load(&config_str, &shards, dtype, &device)?)
             }
-            "mixtral" => {
+            ("mixtral", _) => {
                 Backend::Mixtral(MixtralBackend::load(&config_str, &shards, dtype, &device)?)
             }
-            "qwen2" => Backend::Qwen2(Qwen2Backend::load(&config_str, &shards, dtype, &device)?),
-            "phi3" => Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?),
-            other => bail!(
+            ("qwen2", _) => {
+                Backend::Qwen2(Qwen2Backend::load(&config_str, &shards, dtype, &device)?)
+            }
+            ("phi3", _) => Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?),
+            (other, _) => bail!(
                 "Unsupported model_type: {other:?}. \
-                 Supported: llama, mistral. \
+                 Supported: llama, mistral (TP-aware). \
                  Planned: mixtral, qwen2, phi3."
             ),
         };

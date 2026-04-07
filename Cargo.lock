@@ -3154,6 +3154,7 @@ dependencies = [
  "half",
  "parking_lot",
  "rand 0.8.5",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",
