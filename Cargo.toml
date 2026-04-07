@@ -65,6 +65,7 @@ clap          = { version = "4",    features = ["derive"] }
 uuid          = { version = "1",    features = ["v4"] }
 parking_lot   = "0.12"
 half          = { version = "2",    features = ["serde"] }
+rayon         = "1"
 
 [profile.release]
 opt-level     = 3
