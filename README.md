@@ -94,48 +94,53 @@ curl http://localhost:8000/v1/chat/completions \
   --max-tokens 128
 ```
 
-Example output:
+Example output (NousResearch/Hermes-3-Llama-3.1-8B, NVIDIA V100 32GB, 50 requests, 128 tokens):
 
 ```
   vllm-hb benchmark
   ─────────────────────────────────────
   server     : http://localhost:8000
-  model      : llama
-  requests   : 100
+  model      : Hermes-3-Llama-3.1-8B
+  requests   : 50
   max_tokens : 128
 
   Warmup complete. Running benchmark…
 
   Results
   ─────────────────────────────────────
-  throughput   : 187.3 tok/s
-  total tokens : 12800  (100 requests)
+  throughput   : 37.0 tok/s
+  total tokens : 6400  (50 requests)
 
   TTFT (time to first token)
-    mean       :    94 ms
-    p50        :    89 ms
-    p99        :   210 ms
+    mean       :  3459 ms
+    p50        :  3458 ms
+    p99        :  3468 ms
 
   End-to-end latency
-    p50        :   712 ms
-    p99        :  1340 ms
+    p50        :  3458 ms
+    p99        :  3468 ms
 ```
+
+> 37 tok/s ≈ 66 % of V100 HBM2 peak bandwidth utilised during single-sequence
+> decode — no batching, no flash-attn. TTFT reflects full generation time in
+> non-streaming mode; streaming TTFT (time to first token) is typically < 200 ms.
 
 ---
 
 ## Supported models
 
-Any model in HuggingFace safetensors format with a Llama-style architecture:
+Any model in HuggingFace safetensors format with a supported architecture:
 
-| Family | Tested |
+| Family | Status |
 |---|---|
 | Meta Llama 3 / 3.1 / 3.2 | ✅ |
-| Mistral 7B / Mixtral | ✅ |
-| Qwen 2.5 | ✅ |
-| Microsoft Phi-3 | ✅ |
+| Mistral 7B / 7B-Instruct | ✅ |
+| Mixtral 8x7B / 8x22B | 🔜 planned |
+| Qwen 2.5 | 🔜 planned |
+| Microsoft Phi-3 | 🔜 planned |
 
-> Support for additional architectures (Gemma, Falcon, …) is on the roadmap
-> via additional `candle-transformers` model implementations.
+> Additional architectures are gated only by candle-transformers model
+> implementations — contributions welcome.
 
 ---
 
