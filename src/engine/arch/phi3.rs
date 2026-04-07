@@ -34,4 +34,17 @@ impl Phi3Backend {
     pub fn reset_cache(&self) -> Result<()> {
         unreachable!("Phi3Backend::load always fails")
     }
+
+    pub fn create_kv_cache(&self) -> Vec<Option<(candle_core::Tensor, candle_core::Tensor)>> {
+        unreachable!("Phi3Backend::load always fails")
+    }
+
+    pub fn forward_with_cache(
+        &self,
+        _token_ids: &[u32],
+        _seq_pos: usize,
+        _cache: &mut [Option<(candle_core::Tensor, candle_core::Tensor)>],
+    ) -> Result<Tensor> {
+        unreachable!("Phi3Backend::load always fails")
+    }
 }

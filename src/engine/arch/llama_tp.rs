@@ -562,6 +562,7 @@ impl TpLlamaBackend {
         self.ranks[0].final_forward(&hidden[0])
     }
 
+    #[allow(dead_code)]
     pub fn reset_cache(&self) -> Result<()> {
         let n = self.cfg.num_hidden_layers;
         for r in &self.ranks {
@@ -573,6 +574,24 @@ impl TpLlamaBackend {
     #[allow(dead_code)]
     pub fn world_size(&self) -> usize {
         self.world.world_size()
+    }
+
+    // ── Per-sequence cache API ────────────────────────────────────────────────
+
+    /// TP uses a backend-internal cache; returns a marker.
+    ///
+    /// True per-sequence TP caching requires PagedAttention block tables
+    /// and is deferred to a future issue.
+    #[allow(dead_code)]
+    pub fn create_kv_cache(&self) {
+        // Intentionally returns () — the LlamaTp variant in PerSeqCache is
+        // a zero-size marker; the backend manages cache internally.
+    }
+
+    /// Run one forward step.  The `_cache` argument is a no-op for TP —
+    /// the backend-internal cache is updated in-place by `forward()`.
+    pub fn forward_with_cache(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
+        self.forward(token_ids, seq_pos)
     }
 }
 

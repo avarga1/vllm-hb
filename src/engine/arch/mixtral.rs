@@ -655,4 +655,17 @@ mod tests {
         let sq_mean: f32 = out.sqr().unwrap().mean_all().unwrap().to_scalar().unwrap();
         assert!((sq_mean - 1.0).abs() < 0.1);
     }
+
+    pub fn create_kv_cache(&self) -> Vec<Option<(candle_core::Tensor, candle_core::Tensor)>> {
+        unreachable!("MixtralBackend::load always fails")
+    }
+
+    pub fn forward_with_cache(
+        &self,
+        _token_ids: &[u32],
+        _seq_pos: usize,
+        _cache: &mut [Option<(candle_core::Tensor, candle_core::Tensor)>],
+    ) -> Result<Tensor> {
+        unreachable!("MixtralBackend::load always fails")
+    }
 }

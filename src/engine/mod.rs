@@ -9,8 +9,10 @@
 pub mod arch;
 pub mod config;
 pub mod dtype;
+pub mod kv_cache;
 pub mod loader;
 
 // Primary public API — callers import `engine::Engine` and `engine::ModelConfig`.
 pub use config::ModelConfig;
+pub use kv_cache::PerSeqCache;
 pub use loader::Engine;
