@@ -1,24 +1,36 @@
-//! Inference worker — serialises GPU work and streams tokens back to callers.
+//! Inference worker — scheduler-driven continuous batching loop.
 //!
-//! The worker owns the `Engine` and runs in a dedicated Tokio task.
-//! HTTP handlers submit `WorkItem`s through a `WorkerHandle` and receive
-//! `GenerationEvent`s on a per-request unbounded channel.
-//!
-//! # Concurrency model
+//! # Architecture
 //!
 //! ```text
 //!  HTTP handler 1  ─── WorkItem ──►┐
-//!  HTTP handler 2  ─── WorkItem ──►│  worker task
-//!  HTTP handler N  ─── WorkItem ──►┘  (processes one request at a time;
-//!                                       GPU is always saturated)
+//!  HTTP handler 2  ─── WorkItem ──►│  inbox channel
+//!  HTTP handler N  ─── WorkItem ──►┘
+//!                                   │
+//!                               Worker::run()
+//!                                   │
+//!                          ┌────────▼────────┐
+//!                          │    Scheduler    │ ← admission / FCFS ordering
+//!                          └────────┬────────┘
+//!                                   │  to_prefill / to_decode
+//!                          ┌────────▼────────┐
+//!                          │     Engine      │ ← GPU forward pass
+//!                          └────────┬────────┘
+//!                                   │  token stream
+//!                          per-request result_tx channels
 //! ```
 //!
-//! # Roadmap
+//! # Batching limitation (tracked in issue #12)
 //!
-//! When `scheduler/` is real, `process()` is replaced by a batch-step loop
-//! that pulls from the scheduler's ready queue rather than the raw channel.
-//! `WorkerHandle::submit` will enqueue into the scheduler instead of the
-//! direct channel.
+//! The engine's KV cache is a single shared state (one physical cache per GPU).
+//! Until the engine exposes per-sequence block tables (see `scheduler/block_manager.rs`),
+//! each sequence group is processed to completion before the next is started.
+//! The scheduler still provides:
+//!
+//! - FCFS ordering across concurrent HTTP requests
+//! - Memory-aware admission (blocks are allocated/freed via `BlockManager`)
+//! - Correct preemption + swap infrastructure, ready when the engine gains
+//!   a `forward_batch()` API that accepts per-block KV tensors.
 
 use std::time::Instant;
 
@@ -28,10 +40,19 @@ use tokio::sync::mpsc;
 
 use crate::engine::Engine;
 use crate::sampling;
+use crate::scheduler::Scheduler;
+use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::tokenize;
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem,
 };
+
+// ── Tuning constants ──────────────────────────────────────────────────────────
+
+/// Number of GPU blocks available to the scheduler.
+/// Each block holds `BLOCK_SIZE` (16) tokens of KV cache.
+const NUM_GPU_BLOCKS: usize = 256;
+const NUM_CPU_BLOCKS: usize = 512;
 
 // ── Handle ────────────────────────────────────────────────────────────────────
 
@@ -56,6 +77,9 @@ pub struct Worker {
     engine: Engine,
     tokenizer: Tokenizer,
     eos_tokens: Vec<u32>,
+    scheduler: Scheduler,
+    /// Monotonic counter for assigning unique sequence IDs.
+    next_seq_id: u64,
 }
 
 impl Worker {
@@ -67,61 +91,145 @@ impl Worker {
                 engine,
                 tokenizer,
                 eos_tokens,
+                scheduler: Scheduler::new(NUM_GPU_BLOCKS, NUM_CPU_BLOCKS),
+                next_seq_id: 0,
             },
             WorkerHandle { tx },
         )
     }
 
+    // ── Main loop ─────────────────────────────────────────────────────────────
+
     pub async fn run(mut self) {
-        tracing::info!("Inference worker ready");
-        while let Some(item) = self.rx.recv().await {
-            let id = item.id.clone();
-            if let Err(e) = self.process(item).await {
-                tracing::error!(request_id = %id, error = %e, "Generation failed");
+        tracing::info!(
+            gpu_blocks = NUM_GPU_BLOCKS,
+            cpu_blocks = NUM_CPU_BLOCKS,
+            "Scheduler-driven inference worker ready"
+        );
+
+        loop {
+            // Block until at least one WorkItem arrives.
+            let Some(item) = self.rx.recv().await else {
+                tracing::info!("Inbox closed — worker stopping");
+                break;
+            };
+            self.admit(item);
+
+            // Drain any requests that arrived while we were waiting.
+            while let Ok(item) = self.rx.try_recv() {
+                self.admit(item);
+            }
+
+            // Keep stepping until all queues are empty.
+            loop {
+                // Absorb requests that arrived while the GPU was busy.
+                while let Ok(item) = self.rx.try_recv() {
+                    self.admit(item);
+                }
+
+                if self.scheduler.num_waiting() == 0
+                    && self.scheduler.num_running() == 0
+                    && self.scheduler.num_swapped() == 0
+                {
+                    break;
+                }
+
+                self.step();
             }
         }
+
         tracing::info!("Inference worker stopped");
     }
 
-    // ── Generation loop ───────────────────────────────────────────────────────
+    // ── Admission ─────────────────────────────────────────────────────────────
 
-    async fn process(&self, item: WorkItem) -> Result<()> {
-        let WorkItem {
-            id,
-            token_ids,
-            params,
-            result_tx,
-        } = item;
-        let prompt_len = token_ids.len();
-        let t_start = Instant::now();
+    fn admit(&mut self, item: WorkItem) {
+        let id = self.next_seq_id;
+        self.next_seq_id += 1;
 
-        if let Err(e) = self.engine.reset_cache() {
-            let _ = result_tx.send(GenerationEvent::Error(e.to_string()));
-            return Err(e);
+        let seq = Sequence::new(id, item.token_ids, item.params, item.result_tx);
+        let group = SequenceGroup::new(item.id.clone(), vec![seq]);
+        self.scheduler.add_sequence_group(group);
+
+        tracing::debug!(
+            request_id = %item.id,
+            waiting    = self.scheduler.num_waiting(),
+            "Request admitted to scheduler"
+        );
+    }
+
+    // ── Scheduler step ────────────────────────────────────────────────────────
+
+    fn step(&mut self) {
+        let outputs = self.scheduler.schedule();
+
+        if outputs.is_empty() {
+            return;
         }
 
-        // Prefill.
-        let logits = match self.engine.forward(&token_ids, 0) {
-            Ok(l) => l,
-            Err(e) => {
-                let _ = result_tx.send(GenerationEvent::Error(e.to_string()));
-                return Err(e);
+        let mut done: Vec<SequenceGroup> = Vec::new();
+        let still_running: Vec<SequenceGroup> = Vec::new();
+
+        for mut group in outputs.to_prefill.into_iter().chain(outputs.to_decode) {
+            match self.run_group_to_completion(&mut group) {
+                Ok(()) => done.push(group),
+                Err(e) => {
+                    tracing::error!(
+                        request_id = %group.request_id,
+                        error      = %e,
+                        "Generation failed"
+                    );
+                    for seq in &mut group.seqs {
+                        let _ = seq.result_tx.send(GenerationEvent::Error(e.to_string()));
+                        seq.status = SequenceStatus::Finished(FinishReason::Length);
+                    }
+                    done.push(group);
+                }
             }
+        }
+
+        // Return groups to the scheduler so it can free their GPU blocks.
+        let return_outputs = crate::scheduler::SchedulerOutputs {
+            to_prefill: done,
+            to_decode: still_running,
+            blocks_to_swap_in: Vec::new(),
+            blocks_to_swap_out: Vec::new(),
+            blocks_to_copy: Vec::new(),
         };
+        self.scheduler.update(return_outputs);
+    }
+
+    // ── Generation ────────────────────────────────────────────────────────────
+
+    fn run_group_to_completion(&self, group: &mut SequenceGroup) -> Result<()> {
+        // Single shared KV cache — reset before each new group.
+        self.engine.reset_cache()?;
+
+        let seq = group
+            .seqs
+            .iter_mut()
+            .find(|s| s.status == SequenceStatus::Running)
+            .ok_or_else(|| anyhow::anyhow!("no running sequence in group {}", group.request_id))?;
+
+        let prompt_len = seq.prompt_ids.len();
+        let params = seq.params.clone();
+        let t_start = Instant::now();
+
+        // Prefill.
+        let logits = self.engine.forward(&seq.prompt_ids, 0)?;
         let ttft_ms = t_start.elapsed().as_millis() as u64;
 
         // Decode.
         let mut next_token = sampling::sample(&logits, params.temperature, params.top_p)?;
-        let mut all_tokens = token_ids;
         let mut gen_count = 0usize;
         let mut finish = FinishReason::Length;
 
         loop {
-            all_tokens.push(next_token);
+            seq.output_ids.push(next_token);
             gen_count += 1;
 
             let text = tokenize::decode(&self.tokenizer, &[next_token]).unwrap_or_default();
-            let _ = result_tx.send(GenerationEvent::Token(TokenEvent {
+            let _ = seq.result_tx.send(GenerationEvent::Token(TokenEvent {
                 id: next_token,
                 text,
             }));
@@ -134,22 +242,18 @@ impl Worker {
                 break;
             }
 
-            let pos = all_tokens.len() - 1;
-            let logits = match self.engine.forward(&[next_token], pos) {
-                Ok(l) => l,
-                Err(e) => {
-                    let _ = result_tx.send(GenerationEvent::Error(e.to_string()));
-                    return Err(e);
-                }
-            };
+            let pos = prompt_len + gen_count - 1;
+            let logits = self.engine.forward(&[next_token], pos)?;
             next_token = sampling::sample(&logits, params.temperature, params.top_p)?;
         }
 
+        seq.status = SequenceStatus::Finished(finish);
+
         let total_ms = t_start.elapsed().as_millis() as u64;
-        let tokens_per_sec = gen_count as f64 / (total_ms as f64 / 1000.0);
+        let tokens_per_sec = gen_count as f64 / (total_ms.max(1) as f64 / 1000.0);
 
         tracing::info!(
-            request_id        = %id,
+            request_id        = %group.request_id,
             prompt_tokens     = prompt_len,
             completion_tokens = gen_count,
             ttft_ms,
@@ -159,7 +263,7 @@ impl Worker {
             "Request complete"
         );
 
-        let _ = result_tx.send(GenerationEvent::Finished {
+        let _ = seq.result_tx.send(GenerationEvent::Finished {
             finish_reason: finish,
             stats: GenerationStats {
                 prompt_tokens: prompt_len,

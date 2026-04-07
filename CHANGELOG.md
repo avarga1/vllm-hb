@@ -9,6 +9,16 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Scheduler wired into inference worker (`worker/mod.rs`)
+  - `Worker` now holds a `Scheduler`; incoming `WorkItem`s are converted to
+    `SequenceGroup`s and admitted via `scheduler.add_sequence_group()`
+  - Worker runs a step loop: drain inbox → `scheduler.schedule()` → execute →
+    `scheduler.update()` — scheduler controls admission and FCFS ordering
+  - Monotonic sequence IDs for block-table lookups
+  - Pending issue #12: engine still processes one group at a time (single shared
+    KV cache); batched `forward_batch()` will remove that constraint
+
 ---
 
 ## [0.4.0] — 2026-04-07
