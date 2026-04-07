@@ -1,0 +1,7 @@
+# Default features exclude CUDA so `cargo build` works on any machine.
+# Use `cargo build --features cuda` or `cargo build` on a CUDA-enabled host
+# where candle-core's cuda feature resolves correctly.
+[alias]
+build-gpu = "build --release"
+build-cpu = "build --no-default-features"
+test-cpu  = "test --no-default-features"

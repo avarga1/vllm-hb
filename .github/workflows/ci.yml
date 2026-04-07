@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Check + Lint (CPU only, fast, runs on every PR) ────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (no CUDA features)
+        run: cargo clippy --no-default-features -- -D warnings
+
+  # ── Build + Test (CPU only, no CUDA hardware required) ─────────────────────
+  test:
+    name: Test (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (no CUDA)
+        run: cargo build --no-default-features
+
+      - name: Unit tests (no CUDA)
+        run: cargo test --no-default-features -- --nocapture
+
+  # ── Security audit ─────────────────────────────────────────────────────────
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit
+
+  # ── CUDA build (self-hosted GPU runner, only on main + approved PRs) ───────
+  build-cuda:
+    name: Build (CUDA)
+    runs-on: [self-hosted, gpu]
+    # Only run on main or when a maintainer adds the 'gpu-test' label
+    if: |
+      github.ref == 'refs/heads/main' ||
+      contains(github.event.pull_request.labels.*.name, 'gpu-test')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (CUDA)
+        run: cargo build --release
+
+      - name: Unit tests (CUDA)
+        run: cargo test --release -- --nocapture
+
+      - name: Smoke test — server starts
+        run: |
+          # Verify the binary exists and --help works
+          ./target/release/vllm-hb --help

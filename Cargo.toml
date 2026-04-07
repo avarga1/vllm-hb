@@ -27,9 +27,17 @@ serde_json    = "1"
 tokenizers    = { version = "0.21", features = ["http"] }
 
 # ML compute — pure Rust → CUDA via cudarc, no libtorch, no C++ interop
-candle-core         = { version = "0.9", features = ["cuda"] }
-candle-nn           = { version = "0.9", features = ["cuda"] }
-candle-transformers = { version = "0.9", features = ["cuda"] }
+candle-core         = { version = "0.9", optional = true }
+candle-nn           = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
+
+[features]
+default = ["cuda"]
+cuda    = [
+    "candle-core/cuda",
+    "candle-nn/cuda",
+    "candle-transformers/cuda",
+]
 
 # Sampling
 rand          = "0.8"
