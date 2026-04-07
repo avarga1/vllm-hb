@@ -11,6 +11,27 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] — 2026-04-07
+
+### Added
+- Tensor-parallel Llama forward pass — `--tensor-parallel-size N` now genuinely
+  splits model weights across N GPUs (`src/engine/arch/llama_tp.rs`)
+- Custom TP-aware transformer layers: RMSNorm, RoPE, sharded MHA (GQA-compatible),
+  SwiGLU FFN — written from scratch so all_reduce can be injected at sync points
+- Per-rank weight sharding at load time: column-parallel Q/K/V/gate/up,
+  row-parallel O/down; weights distributed from CPU → each GPU's device
+- rayon par_iter for parallel GPU kernel dispatch across ranks
+- Validation at load time: num_attention_heads, num_kv_heads, intermediate_size
+  must all be divisible by tensor_parallel_size
+- GitHub Projects roadmap (public) — issues #6–#12 track remaining work
+
+### Changed
+- `Engine::load` branches on `world_size`: tp=1 → existing `LlamaBackend`
+  (candle_transformers, unchanged); tp>1 → new `TpLlamaBackend`
+- `--tensor-parallel-size 1` behaviour is identical to before — zero regression
+
+---
+
 ## [0.3.0] — 2026-04-07
 
 ### Added
