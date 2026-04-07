@@ -43,7 +43,7 @@ impl Phi3Backend {
         &self,
         _token_ids: &[u32],
         _seq_pos: usize,
-        _cache: &mut Vec<Option<(candle_core::Tensor, candle_core::Tensor)>>,
+        _cache: &mut [Option<(candle_core::Tensor, candle_core::Tensor)>],
     ) -> Result<Tensor> {
         unreachable!("Phi3Backend::load always fails")
     }
