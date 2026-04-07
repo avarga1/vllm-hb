@@ -476,7 +476,7 @@ impl MixtralModel {
         &self,
         token_ids: &[u32],
         seq_pos: usize,
-        kv_cache: &mut Vec<Option<(Tensor, Tensor)>>,
+        kv_cache: &mut [Option<(Tensor, Tensor)>],
     ) -> Result<Tensor> {
         let device = self.lm_head.weight().device();
         let ids = Tensor::from_vec(token_ids.to_vec(), (1, token_ids.len()), device)?;
