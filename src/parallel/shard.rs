@@ -47,9 +47,7 @@ pub fn column_shard(weight: &Tensor, rank: usize, world_size: usize) -> Result<T
     debug_assert!(world_size >= 1);
     let rows = weight.dim(0)?;
     if rows % world_size != 0 {
-        bail!(
-            "column_shard: out_features ({rows}) is not divisible by world_size ({world_size})"
-        );
+        bail!("column_shard: out_features ({rows}) is not divisible by world_size ({world_size})");
     }
     let chunk = rows / world_size;
     Ok(weight.narrow(0, rank * chunk, chunk)?)
@@ -69,9 +67,7 @@ pub fn row_shard(weight: &Tensor, rank: usize, world_size: usize) -> Result<Tens
     debug_assert!(world_size >= 1);
     let cols = weight.dim(1)?;
     if cols % world_size != 0 {
-        bail!(
-            "row_shard: in_features ({cols}) is not divisible by world_size ({world_size})"
-        );
+        bail!("row_shard: in_features ({cols}) is not divisible by world_size ({world_size})");
     }
     let chunk = cols / world_size;
     Ok(weight.narrow(1, rank * chunk, chunk)?)
@@ -90,9 +86,7 @@ pub fn bias_shard(bias: &Tensor, rank: usize, world_size: usize) -> Result<Tenso
     debug_assert!(world_size >= 1);
     let len = bias.dim(0)?;
     if len % world_size != 0 {
-        bail!(
-            "bias_shard: out_features ({len}) is not divisible by world_size ({world_size})"
-        );
+        bail!("bias_shard: out_features ({len}) is not divisible by world_size ({world_size})");
     }
     let chunk = len / world_size;
     Ok(bias.narrow(0, rank * chunk, chunk)?)
@@ -265,9 +259,7 @@ mod tests {
         let data: Vec<f32> = (0..12).map(|x| x as f32).collect();
         let w = cpu_tensor(&data, &[3, 4]);
 
-        let shards: Vec<Tensor> = (0..2)
-            .map(|rank| row_shard(&w, rank, 2).unwrap())
-            .collect();
+        let shards: Vec<Tensor> = (0..2).map(|rank| row_shard(&w, rank, 2).unwrap()).collect();
         let reassembled = Tensor::cat(&shards, 1).unwrap();
 
         let orig: Vec<f32> = w.flatten_all().unwrap().to_vec1().unwrap();

@@ -111,9 +111,7 @@ impl TpWorld {
     ///
     /// Probes devices 0..31; stops at the first failure.
     fn cuda_device_count() -> usize {
-        (0..32)
-            .take_while(|&i| Device::new_cuda(i).is_ok())
-            .count()
+        (0..32).take_while(|&i| Device::new_cuda(i).is_ok()).count()
     }
 }
 

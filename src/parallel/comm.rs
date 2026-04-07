@@ -115,9 +115,7 @@ mod tests {
     #[test]
     fn all_reduce_four_shards() {
         // 4-way reduce: each rank contributes 1.0 → sum = 4.0
-        let shards: Vec<Tensor> = (0..4)
-            .map(|_| cpu_tensor(&[1.0, 1.0], &[1, 2]))
-            .collect();
+        let shards: Vec<Tensor> = (0..4).map(|_| cpu_tensor(&[1.0, 1.0], &[1, 2])).collect();
         let result = all_reduce(&shards, &Device::Cpu).unwrap();
         let data: Vec<f32> = result.flatten_all().unwrap().to_vec1().unwrap();
         assert_eq!(data, vec![4.0, 4.0]);

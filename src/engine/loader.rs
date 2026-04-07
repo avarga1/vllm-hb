@@ -38,7 +38,10 @@ impl Engine {
         // Build tensor-parallel world.  world_size=1 is always a no-op.
         let world = TpWorld::new(config.tensor_parallel_size)?;
         if world.is_single() {
-            tracing::info!(tensor_parallel_size = 1, "Tensor parallelism disabled (single GPU)");
+            tracing::info!(
+                tensor_parallel_size = 1,
+                "Tensor parallelism disabled (single GPU)"
+            );
         } else {
             tracing::info!(
                 tensor_parallel_size = world.world_size(),
