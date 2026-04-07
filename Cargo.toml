@@ -42,9 +42,11 @@ serde_json    = "1"
 tokenizers    = { version = "0.21", features = ["http"] }
 
 # ML compute — pure Rust → CUDA via cudarc, no libtorch, no C++ interop
-candle-core         = { version = "0.9", features = ["cuda"] }
-candle-nn           = { version = "0.9", features = ["cuda"] }
-candle-transformers = { version = "0.9", features = ["cuda"] }
+# Note: cuda/flash-attn features are NOT listed here — they are activated
+# through the [features] table so --no-default-features gives a CPU build.
+candle-core         = "0.9"
+candle-nn           = "0.9"
+candle-transformers = "0.9"
 
 # Sampling
 rand          = "0.8"

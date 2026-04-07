@@ -17,15 +17,17 @@
 use candle_core::{DType, Device};
 
 /// Pick the weight dtype for the given device and user preference.
+///
+/// Uses `device.is_cuda()` rather than a pattern match on `Device::Cuda`
+/// so this compiles cleanly without the `cuda` feature (CPU-only builds).
 pub fn resolve(device: &Device, bf16: bool) -> DType {
-    match device {
-        Device::Cuda(_) => {
-            if bf16 {
-                DType::BF16
-            } else {
-                DType::F16
-            }
+    if device.is_cuda() {
+        if bf16 {
+            DType::BF16
+        } else {
+            DType::F16
         }
-        _ => DType::F32,
+    } else {
+        DType::F32
     }
 }
