@@ -1,0 +1,56 @@
+[package]
+name = "vllm-hb"
+version = "0.2.0"
+edition = "2024"
+description = "Hammingbound — vLLM-compatible inference runtime in pure Rust. Zero Python. Zero libtorch."
+repository = "https://github.com/avarga1/vllm-hb"
+license = "Apache-2.0"
+readme = "README.md"
+
+[[bin]]
+name = "vllm-hb"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server
+axum          = { version = "0.8",  features = ["json", "macros"] }
+tokio         = { version = "1",    features = ["full"] }
+tower         = "0.5"
+tower-http    = { version = "0.6",  features = ["cors", "trace"] }
+tokio-stream  = "0.1"
+
+# Serialization
+serde         = { version = "1",    features = ["derive"] }
+serde_json    = "1"
+
+# Tokenizer — pure Rust, the canonical HuggingFace implementation
+tokenizers    = { version = "0.21", features = ["http"] }
+
+# ML compute — pure Rust → CUDA via cudarc, no libtorch, no C++ interop
+candle-core         = { version = "0.9", features = ["cuda"] }
+candle-nn           = { version = "0.9", features = ["cuda"] }
+candle-transformers = { version = "0.9", features = ["cuda"] }
+
+# Sampling
+rand          = "0.8"
+
+# Observability
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }
+
+# HTTP client (used by bench subcommand)
+reqwest       = { version = "0.12", features = ["json"] }
+futures-core  = "0.3"
+
+# Utilities
+anyhow        = "1"
+clap          = { version = "4",    features = ["derive"] }
+uuid          = { version = "1",    features = ["v4"] }
+parking_lot   = "0.12"
+half          = { version = "2",    features = ["serde"] }
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+strip         = "symbols"
