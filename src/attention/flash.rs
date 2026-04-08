@@ -25,6 +25,7 @@
 //! | `MixtralBackend` | `candle_flash_attn::flash_attn`     |
 
 /// Returns `true` when the binary was compiled with `--features flash-attn`.
+#[allow(dead_code)]
 pub fn is_available() -> bool {
     cfg!(feature = "flash-attn")
 }
