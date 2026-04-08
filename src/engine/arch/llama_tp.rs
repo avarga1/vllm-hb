@@ -38,6 +38,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use candle_core::{D, DType, Device, Tensor};
+#[cfg(not(feature = "flash-attn"))]
 use candle_nn::ops::softmax;
 use parking_lot::Mutex;
 use rayon::prelude::*;
@@ -286,29 +287,50 @@ impl RankState {
             v
         };
 
-        // Attention scores — work in [heads, seq, dim] layout for matmul
-        // q: [sq, heads, dim] → [heads, sq, dim]
-        // k: [sk, heads, dim] → [heads, dim, sk]  (transposed for scores)
-        let q_t = q.transpose(0, 1)?; // [heads, sq, dim]
-        let k_t = k.transpose(0, 1)?.transpose(1, 2)?; // [heads, dim, sk]
-        let v_t = v.transpose(0, 1)?; // [heads, sk, dim]
+        // ── Attention ─────────────────────────────────────────────────────────
+        //
+        // FA2 path  (`--features flash-attn`, sm_80+):
+        //   Layout: [1, sq, heads, dim] — FA2 expects batch-first, heads last.
+        //   causal=true handles the causal mask; no explicit mask needed.
+        //
+        // SDPA path (default, all hardware):
+        //   Layout: [heads, sq, dim] — classic matmul ordering.
+        //   Explicit additive causal mask applied for prefill (sq > 1).
 
-        let scale = (head_dim as f64).sqrt();
-        let mut scores = (q_t.matmul(&k_t)? / scale)?; // [heads, sq, sk]
+        #[cfg(feature = "flash-attn")]
+        let attn_out = {
+            // FA2 expects [batch, seq, heads, dim] — add batch dim, swap heads/seq.
+            let q_fa = q.unsqueeze(0)?; // [1, sq, heads, dim]
+            let k_fa = k.unsqueeze(0)?; // [1, sk, kv_heads, dim]
+            let v_fa = v.unsqueeze(0)?; // [1, sk, kv_heads, dim]
+            let softmax_scale = 1.0_f32 / (head_dim as f32).sqrt();
+            candle_flash_attn::flash_attn(&q_fa, &k_fa, &v_fa, softmax_scale, true)?
+                .squeeze(0)? // [sq, heads, dim]
+                .reshape((seq, self.local_heads * head_dim))? // [sq, heads*dim]
+        };
 
-        // Causal mask (prefill only — decode has sq=1, no masking needed)
-        if seq > 1 {
-            let mask = causal_mask(seq, sk, seq_pos, &self.device, scores.dtype())?;
-            // mask [sq, sk] → broadcast to [heads, sq, sk]
-            scores = scores.broadcast_add(&mask.unsqueeze(0)?)?;
-        }
+        #[cfg(not(feature = "flash-attn"))]
+        let attn_out = {
+            let q_t = q.transpose(0, 1)?; // [heads, sq, dim]
+            let k_t = k.transpose(0, 1)?.transpose(1, 2)?; // [heads, dim, sk]
+            let v_t = v.transpose(0, 1)?; // [heads, sk, dim]
 
-        let probs = softmax(&scores, 2)?; // [heads, sq, sk]
-        let attn_out = probs.matmul(&v_t)?; // [heads, sq, dim]
-        let attn_out = attn_out
-            .transpose(0, 1)? // [sq, heads, dim]
-            .contiguous()?
-            .reshape((seq, self.local_heads * head_dim))?; // [sq, heads*dim]
+            let scale = (head_dim as f64).sqrt();
+            let mut scores = (q_t.matmul(&k_t)? / scale)?; // [heads, sq, sk]
+
+            // Causal mask (prefill only — decode has sq=1, no masking needed)
+            if seq > 1 {
+                let mask = causal_mask(seq, sk, seq_pos, &self.device, scores.dtype())?;
+                scores = scores.broadcast_add(&mask.unsqueeze(0)?)?;
+            }
+
+            let probs = softmax(&scores, 2)?; // [heads, sq, sk]
+            let attn_out = probs.matmul(&v_t)?; // [heads, sq, dim]
+            attn_out
+                .transpose(0, 1)? // [sq, heads, dim]
+                .contiguous()?
+                .reshape((seq, self.local_heads * head_dim))? // [sq, heads*dim]
+        };
 
         // Row-parallel output projection (partial result)
         let partial = attn_out.matmul(&w.o_proj.t()?)?; // [sq, hidden]

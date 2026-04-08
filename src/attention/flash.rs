@@ -1,48 +1,31 @@
-//! Flash Attention (sm_80+ only).
+//! Flash Attention 2 availability probe.
 //!
-//! # Status: STUB
+//! The actual FA2 kernels live in `candle-flash-attn` (linked when the
+//! `flash-attn` feature is enabled).  Architecture backends call
+//! `candle_flash_attn::flash_attn` directly behind `#[cfg(feature = "flash-attn")]`
+//! guards; this module just exposes a runtime flag for logging and health checks.
 //!
-//! candle-transformers exposes flash attention via a `flash-attn` Cargo
-//! feature that links against the flash-attention-2 CUDA kernels.
+//! # Hardware requirement
 //!
-//! ## To enable
+//! CUDA compute capability ≥ 8.0 (Ampere / Ada Lovelace / Hopper).
+//! RTX 4090 = sm_89 ✅ · A100 = sm_80 ✅ · V100 = sm_70 ❌
 //!
-//! 1. Add to `Cargo.toml`:
-//!    ```toml
-//!    [features]
-//!    flash-attn = ["candle-transformers/flash-attn"]
+//! # How to enable
 //!
-//!    [dependencies]
-//!    candle-transformers = { version = "0.9", features = ["cuda"] }
-//!    ```
+//! ```sh
+//! cargo build --release --features flash-attn
+//! ```
 //!
-//! 2. In `engine/arch/llama.rs`, change:
-//!    ```rust
-//!    let llama_cfg = llama_cfg.into_config(false);   // false = no flash attn
-//!    // becomes:
-//!    let use_flash = cfg!(feature = "flash-attn");
-//!    let llama_cfg = llama_cfg.into_config(use_flash);
-//!    ```
+//! # Backends that use FA2
 //!
-//! ## Hardware requirement
-//!
-//! CUDA compute capability ≥ 8.0 (Ampere).  V100 is sm_70 — the kernel
-//! will compile but produce incorrect results or crash.  Guard with a
-//! runtime capability check before enabling.
-//!
-//! ## Expected speedup
-//!
-//! ~2× reduction in attention memory bandwidth → ~20-40% wall-clock
-//! improvement on long-context requests (2k+ tokens).
+//! | Backend        | FA2 path                              |
+//! |----------------|---------------------------------------|
+//! | `LlamaBackend` | `candle-transformers` built-in        |
+//! | `TpLlamaBackend` | `candle_flash_attn::flash_attn`     |
+//! | `MixtralBackend` | `candle_flash_attn::flash_attn`     |
 
-#![allow(dead_code)]
-
-#[cfg(feature = "flash-attn")]
+/// Returns `true` when the binary was compiled with `--features flash-attn`.
+#[allow(dead_code)]
 pub fn is_available() -> bool {
-    true
-}
-
-#[cfg(not(feature = "flash-attn"))]
-pub fn is_available() -> bool {
-    false
+    cfg!(feature = "flash-attn")
 }
