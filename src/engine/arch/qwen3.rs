@@ -1,29 +1,32 @@
-//! Qwen 2 / 2.5 architecture backend.
+//! Qwen 3 architecture backend.
 //!
-//! Uses `candle_transformers::models::qwen2` — detected by `model_type == "qwen2"`.
+//! Uses `candle_transformers::models::qwen3` — detected by `model_type == "qwen3"`.
+//!
+//! Key difference from Qwen2: per-head QK RMSNorm applied after Q/K projection,
+//! before RoPE. candle-transformers handles this internally.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::qwen2;
+use candle_transformers::models::qwen3;
 use parking_lot::Mutex;
 
-pub struct Qwen2Backend {
-    model: Mutex<qwen2::ModelForCausalLM>,
+pub struct Qwen3Backend {
+    model: Mutex<qwen3::ModelForCausalLM>,
     device: Device,
 }
 
-impl Qwen2Backend {
+impl Qwen3Backend {
     pub fn load(
         config_str: &str,
         shards: &[std::path::PathBuf],
         dtype: DType,
         device: &Device,
     ) -> Result<Self> {
-        let cfg: qwen2::Config =
-            serde_json::from_str(config_str).context("Parsing config.json as Qwen2Config")?;
+        let cfg: qwen3::Config =
+            serde_json::from_str(config_str).context("Parsing config.json as Qwen3Config")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(shards, dtype, device)? };
-        let model = qwen2::ModelForCausalLM::new(&cfg, vb)?;
+        let model = qwen3::ModelForCausalLM::new(&cfg, vb)?;
         Ok(Self {
             model: Mutex::new(model),
             device: device.clone(),

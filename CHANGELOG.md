@@ -11,6 +11,42 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.6.0] — 2026-04-08
+
+### Added
+- **Qwen2 + Qwen3 forward pass** (`src/engine/arch/qwen2.rs`, `qwen3.rs`)
+  - `Qwen2Backend` — wires `candle_transformers::models::qwen2`; supports
+    Qwen2.5-7B-Instruct, Qwen2.5-32B-Instruct
+  - `Qwen3Backend` — wires `candle_transformers::models::qwen3`; per-head
+    QK RMSNorm handled internally by candle
+  - Both detected from `model_type` in `config.json` (`"qwen2"` / `"qwen3"`)
+- **Flash Attention 2** (`--features flash-attn`, sm_80+ only)
+  - `LlamaBackend`: one-liner via `candle-transformers` built-in
+  - `TpLlamaBackend` + `MixtralBackend`: `candle_flash_attn::flash_attn`
+    behind `#[cfg(feature = "flash-attn")]`; SDPA path unchanged on all
+    other hardware (V100, CPU)
+  - Startup log confirms which path is active
+- **True continuous batching** (`src/worker/mod.rs`, `src/engine/kv_cache.rs`)
+  - Each `step()` runs one decode token per active sequence — no sequence
+    blocks another mid-generation
+  - `PerSeqCache` enum owns per-sequence KV state; worker holds
+    `HashMap<seq_id, PerSeqCache>` alongside the scheduler
+  - `Engine::create_kv_cache()` + `forward_with_cache()` — callers own the
+    cache, no global `reset_cache()` between requests
+- **Mixtral 8×7B sparse MoE** (`src/engine/arch/mixtral.rs`)
+  - Written from scratch: `SparseMoeBlock` (top-K routing, renormalized
+    weights, per-expert SwiGLU, scatter-add), sliding window attention,
+    GQA with `repeat_kv`, external resettable KV cache
+  - 10 unit tests
+
+### Changed
+- `candle-core` / `candle-nn` / `candle-transformers` bumped **0.9 → 0.10**
+  (required for Qwen3 support)
+- `candle-flash-attn` added as optional dep (`version = "0.10"`)
+- Worker doc comment updated to reflect true continuous-batching architecture
+
+---
+
 ## [0.5.0] — 2026-04-07
 
 ### Added
@@ -138,7 +174,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/avarga1/vllm-hb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/avarga1/vllm-hb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/avarga1/vllm-hb/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/avarga1/vllm-hb/compare/v0.2.0...v0.3.0
