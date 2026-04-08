@@ -1,9 +1,13 @@
 //! Token sampling — temperature scaling + top-p nucleus filtering.
 //!
 //! # Modules
-//! - `nucleus` — the math: apply_temperature, softmax, nucleus_filter, renormalize
+//! - `nucleus`  — the math: apply_temperature, softmax, nucleus_filter, renormalize
+//! - `stop`     — stop-sequence matching (issue #21, stub)
+//! - `logprobs` — per-token log-probability collection (issue #23, stub)
 
+pub mod logprobs;
 pub mod nucleus;
+pub mod stop;
 
 use anyhow::Result;
 use candle_core::{DType, Tensor};

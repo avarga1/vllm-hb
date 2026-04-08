@@ -126,8 +126,11 @@ async fn collect_response(
             message: ChatMessage {
                 role: "assistant".into(),
                 content: token_texts.join(""),
+                tool_calls: None,
+                tool_call_id: None,
             },
             finish_reason: finish.as_str(),
+            logprobs: None,
         }],
         usage: Usage {
             prompt_tokens: stats.prompt_tokens,

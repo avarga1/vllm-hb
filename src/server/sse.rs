@@ -64,7 +64,11 @@ fn make_chunk(
         model: model.to_string(),
         choices: vec![ChunkChoice {
             index: 0,
-            delta: Delta { role, content },
+            delta: Delta {
+                role,
+                content,
+                tool_calls: None,
+            },
             finish_reason,
         }],
     }
