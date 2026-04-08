@@ -78,6 +78,15 @@ impl WorkerHandle {
             .send(item)
             .map_err(|_| anyhow::anyhow!("Inference worker has shut down"))
     }
+
+    /// Construct a handle backed by a caller-owned sender.
+    ///
+    /// Intended for integration tests that inject a mock worker without
+    /// loading model weights.  Not part of the production API.
+    #[doc(hidden)]
+    pub fn for_test(tx: mpsc::UnboundedSender<WorkItem>) -> Self {
+        Self { tx }
+    }
 }
 
 // ── Worker ────────────────────────────────────────────────────────────────────

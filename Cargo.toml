@@ -7,6 +7,10 @@ repository = "https://github.com/avarga1/vllm-hb"
 license = "Apache-2.0"
 readme = "README.md"
 
+[lib]
+name = "vllm_hb"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vllm-hb"
 path = "src/main.rs"
@@ -74,6 +78,16 @@ uuid          = { version = "1",    features = ["v4"] }
 parking_lot   = "0.12"
 half          = { version = "2",    features = ["serde"] }
 rayon         = "1"
+
+[dev-dependencies]
+# HTTP integration tests
+axum          = { version = "0.8", features = ["json", "macros"] }
+tower         = { version = "0.5", features = ["util"] }
+tokio         = { version = "1",   features = ["full"] }
+serde_json    = "1"
+# Test helpers
+tempfile      = "3"
+bytes         = "1"
 
 [profile.release]
 opt-level     = 3

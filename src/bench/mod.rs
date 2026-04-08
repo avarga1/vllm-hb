@@ -5,9 +5,9 @@
 //! - `concurrent`  — N parallel requests, scheduler overhead test (🔜 stub)
 //!
 //! # Usage
-//! ```
+//! ```text
 //! vllm-hb bench --base-url http://localhost:8000 --n 50 --max-tokens 128
-//! ```
+//! ```text
 
 pub mod concurrent;
 pub mod sequential;

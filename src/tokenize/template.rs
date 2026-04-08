@@ -108,3 +108,115 @@ fn render_mistral_v1(messages: &[ChatMessage]) -> String {
     }
     out
 }
+
+// ── Unit tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage { role: role.to_string(), content: content.to_string() }
+    }
+
+    // ── Detection ─────────────────────────────────────────────────────────────
+
+    fn write_cfg(dir: &TempDir, template: &str) {
+        let json = format!(r#"{{"chat_template": "{template}"}}"#);
+        fs::write(dir.path().join("tokenizer_config.json"), json).unwrap();
+    }
+
+    #[test]
+    fn detect_llama3() {
+        let dir = TempDir::new().unwrap();
+        write_cfg(&dir, "<|start_header_id|>user<|end_header_id|>\\n{q}<|eot_id|>");
+        let dialect = detect(dir.path().to_str().unwrap()).unwrap();
+        assert!(matches!(dialect, TemplateDialect::Llama3));
+    }
+
+    #[test]
+    fn detect_chatml() {
+        let dir = TempDir::new().unwrap();
+        write_cfg(&dir, "<|im_start|>user\\n{q}<|im_end|>");
+        let dialect = detect(dir.path().to_str().unwrap()).unwrap();
+        assert!(matches!(dialect, TemplateDialect::ChatML));
+    }
+
+    #[test]
+    fn detect_mistral_v1() {
+        let dir = TempDir::new().unwrap();
+        write_cfg(&dir, "[INST] {q} [/INST]");
+        let dialect = detect(dir.path().to_str().unwrap()).unwrap();
+        assert!(matches!(dialect, TemplateDialect::MistralV1));
+    }
+
+    #[test]
+    fn detect_unknown_template_returns_none() {
+        let dir = TempDir::new().unwrap();
+        write_cfg(&dir, "some_other_format {q}");
+        assert!(detect(dir.path().to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn detect_missing_file_returns_none() {
+        assert!(detect("/nonexistent/path").is_none());
+    }
+
+    #[test]
+    fn detect_missing_chat_template_key() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("tokenizer_config.json"), r#"{"other_key": "val"}"#).unwrap();
+        assert!(detect(dir.path().to_str().unwrap()).is_none());
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn render_chatml_single_user() {
+        let out = render_chatml(&[msg("user", "hello")]);
+        assert!(out.contains("<|im_start|>user\nhello<|im_end|>"));
+        assert!(out.ends_with("<|im_start|>assistant\n"));
+    }
+
+    #[test]
+    fn render_chatml_system_and_user() {
+        let out = render_chatml(&[msg("system", "be nice"), msg("user", "hi")]);
+        assert!(out.contains("<|im_start|>system\nbe nice<|im_end|>"));
+        assert!(out.contains("<|im_start|>user\nhi<|im_end|>"));
+    }
+
+    #[test]
+    fn render_llama3_has_header_tags() {
+        let out = render_llama3(&[msg("user", "test")]);
+        assert!(out.starts_with("<|begin_of_text|>"));
+        assert!(out.contains("<|start_header_id|>user<|end_header_id|>"));
+        assert!(out.contains("test<|eot_id|>"));
+        assert!(out.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+    }
+
+    #[test]
+    fn render_mistral_v1_user_assistant_turn() {
+        let msgs = vec![msg("user", "hi"), msg("assistant", "hello")];
+        let out = render_mistral_v1(&msgs);
+        assert!(out.contains("[INST] hi [/INST]"));
+        assert!(out.contains("hello </s>"));
+    }
+
+    #[test]
+    fn render_mistral_v1_system_prefix_merged_with_first_user() {
+        let msgs = vec![msg("system", "be helpful"), msg("user", "hi")];
+        let out = render_mistral_v1(&msgs);
+        // System content is merged into the [INST] block.
+        assert!(out.contains("<<SYS>>\nbe helpful\n<</SYS>>"));
+        assert!(out.contains("[INST]"));
+        assert!(out.contains("hi [/INST]"));
+    }
+
+    #[test]
+    fn render_chatml_empty_messages() {
+        let out = render_chatml(&[]);
+        assert_eq!(out, "<|im_start|>assistant\n");
+    }
+}

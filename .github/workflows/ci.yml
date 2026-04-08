@@ -64,6 +64,33 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+  # ── Coverage (CPU only, uploads lcov report to Codecov) ───────────────────
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --no-default-features --lcov --output-path lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+
   # ── CUDA build (self-hosted GPU runner, only on main + approved PRs) ───────
   build-cuda:
     name: Build (CUDA)

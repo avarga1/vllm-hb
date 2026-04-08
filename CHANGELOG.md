@@ -11,6 +11,46 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.7.0] — 2026-04-08
+
+### Added
+- **Library crate** (`src/lib.rs`) — all modules now exported as `vllm_hb::*`;
+  enables integration tests and downstream embedding without the binary
+- **HTTP integration test suite** (`tests/http_api.rs`) — 18 tests covering
+  every public endpoint via `tower::ServiceExt::oneshot` with a mock worker
+  (no GPU, no model weights required):
+  - Health endpoint: 200 + `{"status":"ok"}`
+  - Models endpoint: 200, `"object":"list"`, correct model id
+  - Non-streaming chat: status, response shape, joined content, finish reason,
+    role, usage arithmetic
+  - Streaming chat: 200, `text/event-stream` content-type, `[DONE]` sentinel,
+    role chunk, token content chunks
+  - Error handling: 400 on malformed JSON, 404 on unknown route
+- **`WorkerHandle::for_test()`** — injects a caller-owned sender so integration
+  tests can drive a mock worker without loading weights
+- **`server::router()`** — extracted from `serve()` so tests can call
+  `.oneshot()` without binding a TCP port
+- **OpenAI wire type doc comments** — all 11 public structs in
+  `src/types/openai.rs` fully documented with field-level doc comments;
+  8 unit tests added
+- **Chat-template unit tests** (`src/tokenize/template.rs`) — 10 tests using
+  `tempfile` fixtures covering detection and rendering for ChatML, Llama-3,
+  and Mistral dialects plus edge cases
+- **Test fixtures** (`tests/fixtures/`) — minimal `tokenizer.json` (WordLevel,
+  12-token vocab) and three `tokenizer_config.json` dialect fixtures so the
+  test suite runs fully offline
+- **CI coverage job** — `cargo-llvm-cov` generates an lcov report; uploaded to
+  Codecov on every push/PR (`fail_ci_if_error: false`)
+
+### Changed
+- `Cargo.toml` gains a `[lib]` section (`name = "vllm_hb"`, `path = "src/lib.rs"`)
+  and `[dev-dependencies]` for `axum`, `tower`, `tokio`, `serde_json`,
+  `tempfile`, `bytes`
+- `src/main.rs` refactored to import via `vllm_hb::*` rather than `crate::*`
+- Bench doc comment code block marked `text` to prevent doctest compilation
+
+---
+
 ## [0.6.0] — 2026-04-08
 
 ### Added
@@ -174,7 +214,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/avarga1/vllm-hb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/avarga1/vllm-hb/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/avarga1/vllm-hb/compare/v0.3.0...v0.4.0
