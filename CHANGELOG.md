@@ -14,6 +14,23 @@ Versions follow [Semantic Versioning](https://semver.org/).
 ## [0.7.0] — 2026-04-08
 
 ### Added
+- **Speculative decoding** (`src/speculative.rs`, issue #10)
+  - `SpeculativeDecoder` holds a draft `Engine` and per-sequence draft KV
+    caches; lives inside `Worker` behind an `Option`
+  - **Draft phase**: K autoregressive forward passes on the small draft model
+    with full probability distributions captured for rejection sampling
+  - **Verify phase**: K+1 sequential target passes — stops at the first
+    rejection so the target's KV cache is always correct, no post-step fixup
+  - **Rejection sampling** (Leviathan et al. 2023): accept token i with
+    probability `min(1, q_i / p_i)`; on rejection sample from `(q − p)⁺`
+    correction distribution; sample a bonus token when all K are accepted
+  - **Cache reconciliation**: Mixtral external caches use a pre-draft snapshot
+    (cheap Arc clone) + O(j) replay; Llama/Qwen fall back to rebuilding from
+    the last `DRAFT_FALLBACK_WINDOW = 128` context tokens
+  - CLI flags: `--draft-model PATH`, `--speculative-steps N` (default 5)
+  - Worker logs accepted-per-step at `DEBUG` level for acceptance-rate tuning
+  - 7 unit tests: probability distribution, 2-D logit handling, correction
+    sampling, degenerate fallback, `try_clone_external` variants
 - **Library crate** (`src/lib.rs`) — all modules now exported as `vllm_hb::*`;
   enables integration tests and downstream embedding without the binary
 - **HTTP integration test suite** (`tests/http_api.rs`) — 18 tests covering
@@ -43,6 +60,12 @@ Versions follow [Semantic Versioning](https://semver.org/).
   Codecov on every push/PR (`fail_ci_if_error: false`)
 
 ### Changed
+- `Worker::new` gains an `Option<SpeculativeDecoder>` parameter; standard
+  decoding path unchanged when `None`
+- `step_decode` splits into `step_decode_standard` (existing) +
+  `step_decode_speculative` (new speculative path)
+- `PerSeqCache` gains `try_clone_external()` — cheap snapshot for Mixtral
+  external caches; returns `None` for Llama / LlamaTp (no-clone fallback)
 - `Cargo.toml` gains a `[lib]` section (`name = "vllm_hb"`, `path = "src/lib.rs"`)
   and `[dev-dependencies]` for `axum`, `tower`, `tokio`, `serde_json`,
   `tempfile`, `bytes`

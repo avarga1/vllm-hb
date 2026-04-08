@@ -14,6 +14,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 use vllm_hb::bench;
 use vllm_hb::engine::{self, ModelConfig};
 use vllm_hb::server;
+use vllm_hb::speculative::SpeculativeDecoder;
 use vllm_hb::tokenize;
 use vllm_hb::worker;
 
@@ -75,6 +76,23 @@ struct ServeArgs {
     /// Number of GPUs for tensor parallelism (default: 1 = single GPU).
     #[arg(long, default_value_t = 1)]
     tensor_parallel_size: usize,
+
+    /// Path to a small draft model directory for speculative decoding.
+    ///
+    /// When supplied together with `--speculative-steps`, each decode step
+    /// generates N candidate tokens with the draft model and verifies them
+    /// against the main model using rejection sampling.  Expected speedup:
+    /// 2–3× at identical output quality.  Omit to disable.
+    #[arg(long)]
+    draft_model: Option<String>,
+
+    /// Number of draft tokens to generate per speculative step (K).
+    ///
+    /// Ignored when `--draft-model` is not set.  Typical values: 3–7.
+    /// Higher K increases throughput when the draft acceptance rate is high
+    /// but adds overhead when it is low.
+    #[arg(long, default_value_t = 5)]
+    speculative_steps: usize,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -122,7 +140,30 @@ async fn serve(args: ServeArgs) -> Result<()> {
         "Model ready"
     );
 
-    let (worker, handle) = worker::Worker::new(engine, tokenizer.clone(), eos_tokens);
+    // Optional draft model for speculative decoding.
+    let spec_decoder = if let Some(draft_path) = &args.draft_model {
+        tracing::info!(draft_model = %draft_path, speculative_steps = args.speculative_steps, "Loading draft model");
+        let draft_engine = engine::Engine::load(ModelConfig {
+            model_path: draft_path.clone(),
+            max_seq_len: args.max_seq_len,
+            gpu_memory_utilization: args.gpu_memory_utilization,
+            bf16: args.bf16,
+            tensor_parallel_size: 1, // draft always runs single-GPU
+        })?;
+        tracing::info!(
+            params = draft_engine.param_count(),
+            layers = draft_engine.num_layers(),
+            "Draft model ready"
+        );
+        Some(SpeculativeDecoder::new(
+            draft_engine,
+            args.speculative_steps,
+        ))
+    } else {
+        None
+    };
+
+    let (worker, handle) = worker::Worker::new(engine, tokenizer.clone(), eos_tokens, spec_decoder);
     tokio::spawn(worker.run());
 
     let model_name = args
