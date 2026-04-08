@@ -52,6 +52,7 @@ use crate::engine::{Engine, PerSeqCache};
 use crate::sampling;
 use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::scheduler::{Scheduler, SchedulerOutputs};
+use crate::speculative::SpeculativeDecoder;
 use crate::tokenize;
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem,
@@ -103,10 +104,19 @@ pub struct Worker {
     seq_start: HashMap<u64, Instant>,
     /// Monotonic counter for assigning unique sequence IDs.
     next_seq_id: u64,
+    /// Optional speculative decoder (draft model + rejection sampler).
+    /// When present, `step_decode` uses speculative drafting instead of
+    /// single-token greedy/sampled decoding.
+    spec_decoder: Option<SpeculativeDecoder>,
 }
 
 impl Worker {
-    pub fn new(engine: Engine, tokenizer: Tokenizer, eos_tokens: Vec<u32>) -> (Self, WorkerHandle) {
+    pub fn new(
+        engine: Engine,
+        tokenizer: Tokenizer,
+        eos_tokens: Vec<u32>,
+        spec_decoder: Option<SpeculativeDecoder>,
+    ) -> (Self, WorkerHandle) {
         let (tx, rx) = mpsc::unbounded_channel();
         (
             Self {
@@ -118,6 +128,7 @@ impl Worker {
                 kv_caches: HashMap::new(),
                 seq_start: HashMap::new(),
                 next_seq_id: 0,
+                spec_decoder,
             },
             WorkerHandle { tx },
         )
@@ -126,11 +137,20 @@ impl Worker {
     // ── Main loop ─────────────────────────────────────────────────────────────
 
     pub async fn run(mut self) {
-        tracing::info!(
-            gpu_blocks = NUM_GPU_BLOCKS,
-            cpu_blocks = NUM_CPU_BLOCKS,
-            "Continuous-batching inference worker ready"
-        );
+        if let Some(spec) = &self.spec_decoder {
+            tracing::info!(
+                gpu_blocks = NUM_GPU_BLOCKS,
+                cpu_blocks = NUM_CPU_BLOCKS,
+                speculative_steps = spec.speculative_steps,
+                "Continuous-batching inference worker ready (speculative decoding enabled)"
+            );
+        } else {
+            tracing::info!(
+                gpu_blocks = NUM_GPU_BLOCKS,
+                cpu_blocks = NUM_CPU_BLOCKS,
+                "Continuous-batching inference worker ready"
+            );
+        }
 
         loop {
             // Block until at least one WorkItem arrives.
@@ -260,11 +280,20 @@ impl Worker {
         seq.output_ids.push(first_token);
         self.emit_token(seq, first_token);
 
-        // Store cache for future decode steps.
+        // Store target cache for future decode steps.
         self.kv_caches.insert(seq.id, cache);
+
+        // Warm-start the draft cache (if speculative decoding is enabled).
+        if let Some(spec) = &mut self.spec_decoder {
+            spec.init_seq(seq.id, &seq.prompt_ids)?;
+        }
 
         if self.is_done(seq) {
             self.finish_seq(seq);
+            self.kv_caches.remove(&seq.id);
+            if let Some(spec) = &mut self.spec_decoder {
+                spec.remove_seq(seq.id);
+            }
         }
 
         Ok(())
@@ -272,7 +301,7 @@ impl Worker {
 
     // ── Decode one step for one sequence group ────────────────────────────────
 
-    /// Feed the last generated token, emit the next output token.
+    /// Dispatch to speculative or standard single-token decode.
     fn step_decode(&mut self, group: &mut SequenceGroup) -> Result<()> {
         let seq = group
             .seqs
@@ -280,6 +309,15 @@ impl Worker {
             .find(|s| s.status == SequenceStatus::Running)
             .ok_or_else(|| anyhow::anyhow!("no running sequence in group {}", group.request_id))?;
 
+        if self.spec_decoder.is_some() {
+            self.step_decode_speculative(seq)
+        } else {
+            self.step_decode_standard(seq)
+        }
+    }
+
+    /// Standard single-token decode step.
+    fn step_decode_standard(&mut self, seq: &mut Sequence) -> Result<()> {
         let cache = self
             .kv_caches
             .get_mut(&seq.id)
@@ -303,6 +341,68 @@ impl Worker {
         if self.is_done(seq) {
             self.finish_seq(seq);
             self.kv_caches.remove(&seq.id);
+        }
+
+        Ok(())
+    }
+
+    /// Speculative decode step: draft K tokens, verify with target, accept 1..=K+1.
+    fn step_decode_speculative(&mut self, seq: &mut Sequence) -> Result<()> {
+        // Build the full accepted prefix: prompt + all output tokens so far.
+        let context: Vec<u32> = seq
+            .prompt_ids
+            .iter()
+            .chain(seq.output_ids.iter())
+            .copied()
+            .collect();
+        // seq_pos is the position of context.last() (= last generated token).
+        let seq_pos = seq.prompt_ids.len() + seq.output_ids.len() - 1;
+
+        // Remove the target cache so we can also borrow &self.engine and
+        // &mut self.spec_decoder without aliasing conflicts (distinct fields).
+        let mut cache = self
+            .kv_caches
+            .remove(&seq.id)
+            .ok_or_else(|| anyhow::anyhow!("missing KV cache for seq {}", seq.id))?;
+
+        let accepted = {
+            let spec = self.spec_decoder.as_mut().unwrap();
+            spec.step(
+                seq.id,
+                &context,
+                seq_pos,
+                seq.params.temperature,
+                seq.params.top_p,
+                &self.engine,
+                &mut cache,
+            )?
+        };
+
+        tracing::debug!(
+            seq_id = seq.id,
+            accepted = accepted.len(),
+            spec_k = self.spec_decoder.as_ref().unwrap().speculative_steps,
+            "Speculative step"
+        );
+
+        let mut done = false;
+        for &token in &accepted {
+            seq.output_ids.push(token);
+            self.emit_token(seq, token);
+            if self.is_done(seq) {
+                done = true;
+                break;
+            }
+        }
+
+        if done {
+            self.finish_seq(seq);
+            // kv_cache was already removed above; don't re-insert.
+            if let Some(spec) = &mut self.spec_decoder {
+                spec.remove_seq(seq.id);
+            }
+        } else {
+            self.kv_caches.insert(seq.id, cache);
         }
 
         Ok(())

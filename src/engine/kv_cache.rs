@@ -34,3 +34,20 @@ pub enum PerSeqCache {
     /// This variant is a marker so the worker can insert/remove it uniformly.
     LlamaTp,
 }
+
+impl PerSeqCache {
+    /// Attempt a cheap clone of the cache for external-cache architectures.
+    ///
+    /// Returns `Some` only for `Mixtral`, where the underlying `Tensor`s are
+    /// Arc-backed and cloning costs O(num_layers) ref-count bumps.  Returns
+    /// `None` for `Llama` and `LlamaTp` — callers must use a fallback.
+    ///
+    /// Used by the speculative decoder to snapshot the draft cache before
+    /// generating K candidate tokens so it can be restored on partial accept.
+    pub fn try_clone_external(&self) -> Option<Self> {
+        match self {
+            Self::Mixtral(v) => Some(Self::Mixtral(v.clone())),
+            Self::Llama(_) | Self::LlamaTp => None,
+        }
+    }
+}
