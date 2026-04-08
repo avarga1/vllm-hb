@@ -1,6 +1,6 @@
 [package]
 name = "vllm-hb"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Hammingbound — vLLM-compatible inference runtime in pure Rust. Zero Python. Zero libtorch."
 repository = "https://github.com/avarga1/vllm-hb"
