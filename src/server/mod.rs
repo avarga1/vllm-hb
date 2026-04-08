@@ -44,18 +44,25 @@ pub struct AppState {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-pub async fn serve(state: Arc<AppState>, addr: &str) -> Result<()> {
-    let app = Router::new()
+/// Build the application router without binding to a port.
+///
+/// Extracted so integration tests can call `router(state).oneshot(request)`
+/// directly via [`tower::ServiceExt`] without spinning up a real TCP listener.
+pub fn router(state: Arc<AppState>) -> Router {
+    Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health))
         .route("/metrics", get(metrics::handler))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state)
+}
 
+/// Bind to `addr` and serve forever.
+pub async fn serve(state: Arc<AppState>, addr: &str) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr, "Server listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, router(state)).await?;
     Ok(())
 }
 

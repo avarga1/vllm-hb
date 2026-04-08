@@ -2,25 +2,8 @@
 //!
 //! A vLLM-compatible OpenAI API server written in pure Rust.
 //! No Python. No libtorch. No C++ interop. CUDA via cudarc.
-
-// ── Modules ───────────────────────────────────────────────────────────────────
-
-// Working
-mod bench;
-mod engine;
-mod sampling;
-mod server;
-mod tokenize;
-mod types;
-mod worker;
-
-// Roadmap stubs (declared so `cargo check` covers them)
-mod attention;
-mod parallel;
-mod scheduler;
-mod speculative;
-
-// ── Imports ───────────────────────────────────────────────────────────────────
+//!
+//! Library code lives in `src/lib.rs`; this file is the CLI entry point only.
 
 use std::sync::Arc;
 
@@ -28,10 +11,14 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
-use engine::ModelConfig;
+use vllm_hb::bench;
+use vllm_hb::engine::{self, ModelConfig};
+use vllm_hb::server;
+use vllm_hb::tokenize;
+use vllm_hb::worker;
+
 #[allow(unused_imports)]
-// WorkerHandle is the type of AppState::worker; kept for documentation
-use worker::WorkerHandle;
+use vllm_hb::worker::WorkerHandle;
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 

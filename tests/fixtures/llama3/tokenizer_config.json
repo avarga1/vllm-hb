@@ -1,0 +1,2 @@
+{"chat_template": "<|start_header_id|>user<|end_header_id|>
+{query}<|eot_id|>"}
