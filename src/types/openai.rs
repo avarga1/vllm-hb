@@ -213,10 +213,17 @@ mod tests {
             model: "m".into(),
             choices: vec![Choice {
                 index: 0,
-                message: ChatMessage { role: "assistant".into(), content: "hi".into() },
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: "hi".into(),
+                },
                 finish_reason: "stop",
             }],
-            usage: Usage { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+            usage: Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
         };
         let v: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["usage"]["total_tokens"], 15);
@@ -227,7 +234,10 @@ mod tests {
 
     #[test]
     fn delta_skips_none_fields() {
-        let delta = Delta { role: None, content: Some("hello".into()) };
+        let delta = Delta {
+            role: None,
+            content: Some("hello".into()),
+        };
         let v: serde_json::Value = serde_json::to_value(&delta).unwrap();
         assert!(v.get("role").is_none(), "role should be absent when None");
         assert_eq!(v["content"], "hello");
@@ -235,7 +245,10 @@ mod tests {
 
     #[test]
     fn delta_role_only_on_first_chunk() {
-        let delta = Delta { role: Some("assistant"), content: None };
+        let delta = Delta {
+            role: Some("assistant"),
+            content: None,
+        };
         let v: serde_json::Value = serde_json::to_value(&delta).unwrap();
         assert_eq!(v["role"], "assistant");
         assert!(v.get("content").is_none());

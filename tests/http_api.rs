@@ -23,7 +23,6 @@ use tower::ServiceExt; // oneshot
 
 use vllm_hb::{
     server::AppState,
-    tokenize,
     types::pipeline::{FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem},
     worker::WorkerHandle,
 };
@@ -54,12 +53,14 @@ fn mock_worker() -> (WorkerHandle, tokio::task::JoinHandle<()>) {
     let handle = WorkerHandle::for_test(tx);
     let task = tokio::spawn(async move {
         while let Some(item) = rx.recv().await {
-            let _ = item
-                .result_tx
-                .send(GenerationEvent::Token(TokenEvent { id: 1, text: "hello".into() }));
-            let _ = item
-                .result_tx
-                .send(GenerationEvent::Token(TokenEvent { id: 2, text: " world".into() }));
+            let _ = item.result_tx.send(GenerationEvent::Token(TokenEvent {
+                id: 1,
+                text: "hello".into(),
+            }));
+            let _ = item.result_tx.send(GenerationEvent::Token(TokenEvent {
+                id: 2,
+                text: " world".into(),
+            }));
             let _ = item.result_tx.send(GenerationEvent::Finished {
                 finish_reason: FinishReason::Stop,
                 stats: GenerationStats {
@@ -93,7 +94,9 @@ fn test_router() -> axum::Router {
 
 /// Collect response body bytes.
 async fn body_bytes(resp: axum::response::Response) -> bytes::Bytes {
-    axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap()
+    axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
 }
 
 /// Deserialize response body as JSON.
@@ -116,14 +119,20 @@ fn chat_request(body: Value) -> Request<Body> {
 
 #[tokio::test]
 async fn health_returns_200() {
-    let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn health_body_is_ok() {
-    let req = Request::builder().uri("/health").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ok");
@@ -133,14 +142,20 @@ async fn health_body_is_ok() {
 
 #[tokio::test]
 async fn models_returns_200() {
-    let req = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/v1/models")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn models_returns_list_object() {
-    let req = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/v1/models")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     let body = body_json(resp).await;
     assert_eq!(body["object"], "list");
@@ -148,7 +163,10 @@ async fn models_returns_list_object() {
 
 #[tokio::test]
 async fn models_contains_loaded_model() {
-    let req = Request::builder().uri("/v1/models").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/v1/models")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     let body = body_json(resp).await;
     let id = body["data"][0]["id"].as_str().unwrap();
@@ -260,7 +278,12 @@ async fn chat_streaming_content_type_is_event_stream() {
         "stream": true
     }));
     let resp = test_router().oneshot(req).await.unwrap();
-    let ct = resp.headers().get(header::CONTENT_TYPE).unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.contains("text/event-stream"), "Content-Type was: {ct}");
 }
 
@@ -324,7 +347,10 @@ async fn chat_streaming_token_chunks_have_content() {
         })
         .collect();
     // Mock sends two token events ("hello" and " world").
-    assert!(!token_texts.is_empty(), "Expected at least one content chunk");
+    assert!(
+        !token_texts.is_empty(),
+        "Expected at least one content chunk"
+    );
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────
@@ -344,7 +370,10 @@ async fn chat_invalid_json_returns_422() {
 
 #[tokio::test]
 async fn unknown_route_returns_404() {
-    let req = Request::builder().uri("/nonexistent").body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri("/nonexistent")
+        .body(Body::empty())
+        .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

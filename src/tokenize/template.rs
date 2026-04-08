@@ -118,7 +118,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn msg(role: &str, content: &str) -> ChatMessage {
-        ChatMessage { role: role.to_string(), content: content.to_string() }
+        ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+        }
     }
 
     // ── Detection ─────────────────────────────────────────────────────────────
@@ -131,7 +134,10 @@ mod tests {
     #[test]
     fn detect_llama3() {
         let dir = TempDir::new().unwrap();
-        write_cfg(&dir, "<|start_header_id|>user<|end_header_id|>\\n{q}<|eot_id|>");
+        write_cfg(
+            &dir,
+            "<|start_header_id|>user<|end_header_id|>\\n{q}<|eot_id|>",
+        );
         let dialect = detect(dir.path().to_str().unwrap()).unwrap();
         assert!(matches!(dialect, TemplateDialect::Llama3));
     }
@@ -167,7 +173,11 @@ mod tests {
     #[test]
     fn detect_missing_chat_template_key() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("tokenizer_config.json"), r#"{"other_key": "val"}"#).unwrap();
+        fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"other_key": "val"}"#,
+        )
+        .unwrap();
         assert!(detect(dir.path().to_str().unwrap()).is_none());
     }
 
