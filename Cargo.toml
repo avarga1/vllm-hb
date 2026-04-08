@@ -48,9 +48,10 @@ tokenizers    = { version = "0.21", features = ["http"] }
 # ML compute — pure Rust → CUDA via cudarc, no libtorch, no C++ interop
 # Note: cuda/flash-attn features are NOT listed here — they are activated
 # through the [features] table so --no-default-features gives a CPU build.
-candle-core         = "0.9"
-candle-nn           = "0.9"
-candle-transformers = "0.9"
+candle-core         = "0.10"
+candle-nn           = "0.10"
+candle-transformers = "0.10"
+candle-flash-attn   = { version = "0.10", optional = true }
 # Explicit cudarc dep so the `nccl` and `f16` features can be toggled.
 # Version must stay in sync with candle-core's transitive requirement.
 cudarc              = { version = "0.17", optional = true }

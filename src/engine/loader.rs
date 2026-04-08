@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use candle_core::{Device, Tensor};
 
 use super::arch::{
-    Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend, TpLlamaBackend,
+    Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend, Qwen3Backend, TpLlamaBackend,
 };
 use super::config::{HfMeta, ModelConfig};
 use super::dtype;
@@ -100,11 +100,13 @@ impl Engine {
             ("qwen2", _) => {
                 Backend::Qwen2(Qwen2Backend::load(&config_str, &shards, dtype, &device)?)
             }
+            ("qwen3", _) => {
+                Backend::Qwen3(Qwen3Backend::load(&config_str, &shards, dtype, &device)?)
+            }
             ("phi3", _) => Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?),
             (other, _) => bail!(
                 "Unsupported model_type: {other:?}. \
-                 Supported: llama, mistral (TP-aware). \
-                 Planned: mixtral, qwen2, phi3."
+                 Supported: llama, mistral (TP-aware), mixtral, qwen2, qwen3."
             ),
         };
 
