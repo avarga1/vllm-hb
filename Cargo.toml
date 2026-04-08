@@ -22,7 +22,7 @@ cuda       = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 nccl       = ["cuda", "cudarc/nccl", "cudarc/f16"]
 # Flash Attention 2 — sm_80+ (Ampere) only; ~2× attention speedup on long context
 # Enable with: cargo build --release --features flash-attn
-flash-attn = ["cuda", "candle-transformers/flash-attn"]
+flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn"]
 # BF16 weight dtype — native on A100+, emulated (slow) on V100
 # This is a marker flag; logic lives in engine/dtype.rs
 bf16       = []
