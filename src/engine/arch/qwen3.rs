@@ -45,7 +45,8 @@ impl Qwen3Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        vec![] // internal cache — forward_with_cache delegates to forward()
+        self.model.lock().clear_kv_cache();
+        vec![]
     }
 
     pub fn forward_with_cache(

@@ -42,7 +42,11 @@ impl Qwen2Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        vec![] // internal cache — forward_with_cache delegates to forward()
+        // Clear the model's internal KV cache so each new sequence starts
+        // fresh.  Without this, entries from the previous request bleed into
+        // the next prefill, causing an attention-mask shape mismatch.
+        self.model.lock().clear_kv_cache();
+        vec![]
     }
 
     pub fn forward_with_cache(
