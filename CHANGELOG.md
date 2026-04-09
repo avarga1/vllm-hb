@@ -23,11 +23,27 @@ Versions follow [Semantic Versioning](https://semver.org/).
   - Worker `step_prefill()` receives hit count and logs prefix cache hits; structured for KV restore once `PerSeqCache::try_restore_prefix` is wired per architecture
   - `BlockManager::num_prefix_cached_blocks()` for observability
   - 9 unit tests: hash determinism, hash collision resistance, order sensitivity, miss on empty, insert+lookup, eviction, remove by block ID, len tracking, same-hash update
+- **`POST /v1/embeddings`** (`src/server/handlers.rs`, issue #29)
+  - Full OpenAI Embeddings API compatibility — single string or batch array input, echoed model name, `object: "list"` response
+  - `EmbeddingRequest` / `EmbeddingResponse` / `EmbeddingObject` / `EmbeddingUsage` / `EmbeddingInput` types added to `src/types/openai.rs`; `EmbeddingInput` is untagged — accepts `"string"` or `["a","b"]` transparently
+  - `encoding_format` field — only `"float"` supported; `"base64"` returns HTTP 400
+  - Returns HTTP 501 when the model's embedding matrix was not found at load time (clear error message directs users to a dedicated embedding model)
+  - 8 integration tests: 200 status, response shape, vector dimension, L2 norm ≈ 1, batch input, usage accounting, bad encoding format (400), no embed table (501)
+- **`Engine::embed_tokens_clone()`** — cheap Arc ref-bump clone of the embedding matrix
+- **`Engine::hidden_size()`** — expose hidden dimension for AppState
+- **`Engine` embeds on load** (`src/engine/loader.rs`)
+  - Probes 4 known safetensors key names (`model.embed_tokens.weight`, `transformer.wte.weight`, `model.wte.weight`, `embeddings.word_embeddings.weight`) across all architecture families
+  - Loaded as F32 for CPU-side mean-pool; stored as `Option<Tensor>` in `Engine`
+- **`AppState`** gains `embed_tokens: Option<Tensor>` and `hidden_size: usize`; populated from engine before the worker takes ownership
+
+### Algorithm (mean-pool + L2-norm)
+Input token IDs → index `embed_tokens [vocab, hidden]` → `[seq_len, hidden]` → mean across seq → `[hidden]` → L2-normalise → `Vec<f32>`. Fast (no transformer forward pass), deterministic, O(seq_len · hidden) — suitable for shared system-prompt caching and similarity search.
 
 ### Changed
 - `BlockManager::allocate()` signature changed from `-> Result<()>` to `-> Result<AllocResult>`
 - `SchedulerOutputs` gains `prefix_hit_blocks: Vec<usize>` field
 - `BlockManager::free()` registers completed prompt blocks in prefix cache on every free (content-hash preserved for hit detection on re-admission)
+- `AppState` gains `embed_tokens: Option<Tensor>` and `hidden_size: usize`
 - Version bumped 0.9.0 → 0.10.0
 
 ### Notes

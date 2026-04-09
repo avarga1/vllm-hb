@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
+use candle_nn::VarBuilder;
 
 use super::arch::{
     Backend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend, Qwen3Backend, TpLlamaBackend,
@@ -13,6 +14,19 @@ use super::config::{HfMeta, ModelConfig};
 use super::dtype;
 use super::kv_cache::PerSeqCache;
 use crate::parallel::TpWorld;
+
+// ── Known embedding-weight keys (by model family) ────────────────────────────
+
+/// Safetensors key names tried in order when loading the token embedding matrix.
+///
+/// Different HuggingFace model families use different key names for the same
+/// `embed_tokens` weight.  We try each in sequence and use the first hit.
+const EMBED_WEIGHT_KEYS: &[&str] = &[
+    "model.embed_tokens.weight",         // Llama, Mistral, Qwen2
+    "transformer.wte.weight",            // GPT-2, Falcon
+    "model.wte.weight",                  // older HF GPT-style
+    "embeddings.word_embeddings.weight", // BERT
+];
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +44,11 @@ pub struct Engine {
     num_layers: usize,
     hidden_size: usize,
     intermediate_size: usize,
+    /// Token embedding matrix `[vocab_size, hidden_size]` loaded once from
+    /// the safetensors shards.  Used by `embed()` to produce mean-pooled,
+    /// L2-normalised token embeddings without a full transformer forward pass.
+    /// `None` when no known embedding weight key was found in the shards.
+    embed_tokens: Option<Tensor>,
 }
 
 impl Engine {
@@ -118,6 +137,26 @@ impl Engine {
             ),
         };
 
+        // ── Load token embedding matrix for embed() ───────────────────────────
+        // Try each known key name; use the first shard that contains it.
+        let embed_tokens = (|| -> Option<Tensor> {
+            let vb =
+                unsafe { VarBuilder::from_mmaped_safetensors(&shards, DType::F32, &device).ok()? };
+            for &key in EMBED_WEIGHT_KEYS {
+                if let Ok(t) = vb.get_with_hints_dtype(
+                    (meta.vocab_size, meta.hidden_size),
+                    key,
+                    candle_nn::Init::Const(0.0),
+                    DType::F32,
+                ) {
+                    tracing::debug!(key, "Token embedding matrix loaded for /v1/embeddings");
+                    return Some(t);
+                }
+            }
+            tracing::debug!("No token embedding key found — /v1/embeddings will be unavailable");
+            None
+        })();
+
         tracing::info!("Weights loaded");
         Ok(Self {
             config,
@@ -127,6 +166,7 @@ impl Engine {
             num_layers: meta.num_hidden_layers,
             hidden_size: meta.hidden_size,
             intermediate_size: meta.intermediate_size,
+            embed_tokens,
         })
     }
 
@@ -167,6 +207,62 @@ impl Engine {
 
     // ── Metadata ──────────────────────────────────────────────────────────────
 
+    // ── Embeddings ────────────────────────────────────────────────────────────
+
+    /// Compute a mean-pooled, L2-normalised embedding vector for `token_ids`.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Index `embed_tokens` with `token_ids` → `[seq_len, hidden_size]`
+    /// 2. Mean-pool over the sequence dimension → `[hidden_size]`
+    /// 3. L2-normalise so ‖embedding‖₂ = 1
+    ///
+    /// This is a *static* embedding (bag-of-tokens mean pooling of the
+    /// input embedding table, no transformer forward pass).  It is fast and
+    /// deterministic.  For contextual embeddings use a dedicated
+    /// embedding model (E5, BGE, etc.) loaded into this server.
+    ///
+    /// Returns `Err` when the embedding matrix was not found during load.
+    pub fn embed(&self, token_ids: &[u32]) -> Result<Vec<f32>> {
+        let embed_table = self
+            .embed_tokens
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("embedding matrix not available for this model"))?;
+
+        if token_ids.is_empty() {
+            return Ok(vec![0.0_f32; self.hidden_size]);
+        }
+
+        // Index into [vocab_size, hidden_size] → [seq_len, hidden_size].
+        let ids = Tensor::new(token_ids, &self.device)?;
+        let token_embeds = embed_table.index_select(&ids, 0)?;
+
+        // Mean-pool over seq_len → [hidden_size].
+        let mean = token_embeds.mean(0)?;
+        let mean_vec: Vec<f32> = mean.to_vec1()?;
+
+        // L2-normalise.
+        let norm: f32 = mean_vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = norm.max(1e-9); // avoid div-by-zero for all-zero inputs
+        Ok(mean_vec.iter().map(|x| x / norm).collect())
+    }
+
+    /// Whether this engine can produce embeddings (embed_tokens was loaded).
+    pub fn supports_embeddings(&self) -> bool {
+        self.embed_tokens.is_some()
+    }
+
+    /// Return a cheap clone of the token embedding matrix.
+    ///
+    /// `candle_core::Tensor` is Arc-backed — cloning bumps a ref count, no
+    /// data is copied.  Used by the server to populate `AppState` before the
+    /// engine is moved into the inference worker.
+    pub fn embed_tokens_clone(&self) -> Option<Tensor> {
+        self.embed_tokens.clone()
+    }
+
+    // ── Metadata ──────────────────────────────────────────────────────────────
+
     pub fn param_count(&self) -> usize {
         let attn = 4 * self.hidden_size * self.hidden_size;
         let ffn = 3 * self.hidden_size * self.intermediate_size;
@@ -180,5 +276,8 @@ impl Engine {
     }
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
+    }
+    pub fn hidden_size(&self) -> usize {
+        self.hidden_size
     }
 }

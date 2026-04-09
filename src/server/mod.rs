@@ -10,6 +10,7 @@
 //! |--------|---------------------------|---------------------------------|
 //! | POST   | `/v1/chat/completions`    | `handlers::chat_completions`    |
 //! | POST   | `/v1/completions`         | `handlers::completions`         |
+//! | POST   | `/v1/embeddings`          | `handlers::embeddings`          |
 //! | GET    | `/v1/models`              | `handlers::list_models`         |
 //! | GET    | `/health`                 | `handlers::health`              |
 //! | GET    | `/metrics`                | `metrics::handler` (stub)       |
@@ -28,6 +29,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
+use candle_core::Tensor;
 use tokenizers::Tokenizer;
 use tower_http::cors::CorsLayer;
 
@@ -41,6 +43,11 @@ pub struct AppState {
     pub tokenizer: Tokenizer,
     pub model_name: String,
     pub model_path: String,
+    /// Token embedding matrix `[vocab_size, hidden_size]` for `/v1/embeddings`.
+    /// `None` when the model's embedding weight was not found at load time.
+    pub embed_tokens: Option<Tensor>,
+    /// Model hidden size — dimension of each embedding vector.
+    pub hidden_size: usize,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -53,6 +60,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/completions", post(handlers::completions))
+        .route("/v1/embeddings", post(handlers::embeddings))
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health))
         .route("/metrics", get(metrics::handler))
