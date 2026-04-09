@@ -9,6 +9,7 @@
 
 // Working modules
 pub mod batch;
+pub mod kernels;
 pub mod bench;
 pub mod engine;
 pub mod sampling;
