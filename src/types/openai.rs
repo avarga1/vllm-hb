@@ -319,6 +319,74 @@ pub struct FunctionCallDelta {
     pub arguments: Option<String>,
 }
 
+// ── Legacy text completions (issue #25) ──────────────────────────────────────
+
+/// `POST /v1/completions` request body.
+///
+/// Legacy text-completion API.  Accepts a raw string `prompt` instead of a
+/// structured `messages` array.  A subset of the chat-completions sampling
+/// parameters are supported.
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct CompletionRequest {
+    /// Model name — echoed back, ignored for routing.
+    pub model: String,
+    /// Raw prompt string passed directly to the tokenizer.
+    pub prompt: String,
+    /// Maximum number of tokens to generate.  Defaults to 512.
+    #[serde(default = "defaults::max_tokens")]
+    pub max_tokens: usize,
+    /// Sampling temperature in `[0, 2]`.  Defaults to 0.7.
+    #[serde(default = "defaults::temperature")]
+    pub temperature: f32,
+    /// Nucleus sampling threshold.  Defaults to 1.0.
+    #[serde(default = "defaults::top_p")]
+    pub top_p: f32,
+    /// When `true`, tokens are returned as SSE events.
+    #[serde(default)]
+    pub stream: bool,
+    /// Stop strings.
+    #[serde(default)]
+    pub stop: Vec<String>,
+    /// Reproducible sampling seed.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Presence penalty `[-2, 2]`.
+    #[serde(default)]
+    pub presence_penalty: f32,
+    /// Frequency penalty `[-2, 2]`.
+    #[serde(default)]
+    pub frequency_penalty: f32,
+}
+
+/// `POST /v1/completions` non-streaming response body.
+#[derive(Debug, Serialize)]
+pub struct CompletionResponse {
+    /// Unique identifier, e.g. `"cmpl-abc123"`.
+    pub id: String,
+    /// Always `"text_completion"`.
+    pub object: &'static str,
+    /// Unix timestamp when the response was created.
+    pub created: u64,
+    /// Echoed model name.
+    pub model: String,
+    /// Completion choices — always a single element.
+    pub choices: Vec<CompletionChoice>,
+    /// Token usage statistics.
+    pub usage: Usage,
+}
+
+/// One completion alternative inside a [`CompletionResponse`].
+#[derive(Debug, Serialize)]
+pub struct CompletionChoice {
+    /// Zero-based index.
+    pub index: usize,
+    /// The generated text.
+    pub text: String,
+    /// Why generation stopped: `"stop"` or `"length"`.
+    pub finish_reason: &'static str,
+}
+
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 mod defaults {

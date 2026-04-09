@@ -27,6 +27,12 @@ pub struct SamplingParams {
     /// `true` when the request included `tools` — the worker will run
     /// `ToolCallParser` on the completed output.
     pub has_tools: bool,
+    /// Subtract a fixed penalty from logits of tokens that have appeared at
+    /// least once.  Range `[-2, 2]`.  `0.0` is a no-op.
+    pub presence_penalty: f32,
+    /// Subtract a penalty proportional to how many times each token has
+    /// appeared.  Range `[-2, 2]`.  `0.0` is a no-op.
+    pub frequency_penalty: f32,
 }
 
 impl Default for SamplingParams {
@@ -40,6 +46,8 @@ impl Default for SamplingParams {
             logprobs: false,
             top_logprobs: 0,
             has_tools: false,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
         }
     }
 }
