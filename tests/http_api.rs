@@ -355,6 +355,112 @@ async fn chat_streaming_token_chunks_have_content() {
     );
 }
 
+// ── Legacy text completions ───────────────────────────────────────────────────
+
+fn completion_request(body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn completion_returns_200() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Hello, world!"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn completion_response_shape() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Hello"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    assert_eq!(body["object"], "text_completion");
+    assert!(body["id"].as_str().unwrap().starts_with("cmpl-"));
+    assert!(body["created"].is_number());
+    assert_eq!(body["model"], "test-model");
+}
+
+#[tokio::test]
+async fn completion_text_joined() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Say something"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    let text = body["choices"][0]["text"].as_str().unwrap();
+    assert_eq!(text, "hello world");
+}
+
+#[tokio::test]
+async fn completion_finish_reason_stop() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Say something"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    assert_eq!(body["choices"][0]["finish_reason"], "stop");
+}
+
+#[tokio::test]
+async fn completion_usage_present() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Say something"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    assert!(body["usage"]["prompt_tokens"].is_number());
+    assert!(body["usage"]["completion_tokens"].is_number());
+    let total = body["usage"]["total_tokens"].as_u64().unwrap();
+    let prompt = body["usage"]["prompt_tokens"].as_u64().unwrap();
+    let comp = body["usage"]["completion_tokens"].as_u64().unwrap();
+    assert_eq!(total, prompt + comp);
+}
+
+#[tokio::test]
+async fn completion_streaming_returns_200() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Hello",
+        "stream": true
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn completion_streaming_event_stream() {
+    let req = completion_request(json!({
+        "model": "test-model",
+        "prompt": "Hello",
+        "stream": true
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.contains("text/event-stream"), "Content-Type was: {ct}");
+}
+
 // ── Error handling ────────────────────────────────────────────────────────────
 
 #[tokio::test]

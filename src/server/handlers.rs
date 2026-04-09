@@ -24,7 +24,8 @@ use crate::tokenize;
 use crate::tools::format::{detect_format, inject_tools};
 use crate::tools::parser::ToolCallParser;
 use crate::types::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, ChoiceLogprobs, Usage,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, ChoiceLogprobs,
+    CompletionChoice, CompletionRequest, CompletionResponse, Usage,
 };
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, SamplingParams, WorkItem,
@@ -89,6 +90,8 @@ pub async fn chat_completions(
             logprobs: req.logprobs,
             top_logprobs: req.top_logprobs.unwrap_or(0),
             has_tools: !req.tools.is_empty(),
+            presence_penalty: req.presence_penalty,
+            frequency_penalty: req.frequency_penalty,
         },
         result_tx: event_tx,
     };
@@ -104,6 +107,95 @@ pub async fn chat_completions(
     } else {
         collect_response(event_rx, req.model).await.into_response()
     }
+}
+
+// ── Legacy text completions ───────────────────────────────────────────────────
+
+pub async fn completions(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CompletionRequest>,
+) -> Response {
+    let token_ids = match tokenize::encode(&state.tokenizer, &req.prompt) {
+        Ok(ids) => ids,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
+    };
+
+    let (event_tx, event_rx) = mpsc::unbounded_channel::<GenerationEvent>();
+    let work = WorkItem {
+        id: Uuid::new_v4().to_string(),
+        token_ids,
+        params: SamplingParams {
+            max_tokens: req.max_tokens,
+            temperature: req.temperature,
+            top_p: req.top_p,
+            stop: req.stop.clone(),
+            seed: req.seed,
+            presence_penalty: req.presence_penalty,
+            frequency_penalty: req.frequency_penalty,
+            ..SamplingParams::default()
+        },
+        result_tx: event_tx,
+    };
+
+    if let Err(e) = state.worker.submit(work) {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
+    }
+
+    if req.stream {
+        Sse::new(sse_mod::build_stream(event_rx, req.model))
+            .keep_alive(KeepAlive::default())
+            .into_response()
+    } else {
+        collect_completion(event_rx, req.model)
+            .await
+            .into_response()
+    }
+}
+
+/// Collect a non-streaming `/v1/completions` response.
+async fn collect_completion(
+    mut rx: mpsc::UnboundedReceiver<GenerationEvent>,
+    model: String,
+) -> impl IntoResponse {
+    let mut token_texts = Vec::<String>::new();
+    let mut finish = FinishReason::Length;
+    let mut stats = GenerationStats::default();
+
+    while let Some(evt) = rx.recv().await {
+        match evt {
+            GenerationEvent::Token(t) => token_texts.push(t.text),
+            GenerationEvent::Finished {
+                finish_reason,
+                stats: s,
+                ..
+            } => {
+                finish = finish_reason;
+                stats = s;
+                break;
+            }
+            GenerationEvent::Error(e) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
+            }
+        }
+    }
+
+    Json(CompletionResponse {
+        id: format!("cmpl-{}", Uuid::new_v4()),
+        object: "text_completion",
+        created: unix_now(),
+        model,
+        choices: vec![CompletionChoice {
+            index: 0,
+            text: token_texts.join(""),
+            finish_reason: finish.as_str(),
+        }],
+        usage: Usage {
+            prompt_tokens: stats.prompt_tokens,
+            completion_tokens: stats.completion_tokens,
+            total_tokens: stats.prompt_tokens + stats.completion_tokens,
+        },
+    })
+    .into_response()
 }
 
 // ── Non-streaming collection ──────────────────────────────────────────────────

@@ -11,6 +11,40 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.9.0] — 2026-04-08
+
+### Added
+- **Presence / frequency penalties** (`src/sampling/penalty.rs`, issue #24)
+  - `apply_penalties(logits, token_counts, presence_penalty, frequency_penalty)` —
+    applied before temperature scaling so penalties interact naturally with nucleus
+    filtering
+  - `count_tokens(output_ids, vocab_size)` — O(n) histogram from output token IDs
+  - Formula matches OpenAI spec:
+    `logit[t] -= presence * (count > 0) + frequency * count / total_tokens`
+  - Fast path: both penalties are skipped when both are within `1e-6` of zero
+  - Applied only after the first output token (no-op at prefill)
+  - 7 unit tests: zero no-op, presence reduces seen tokens, frequency scales with
+    count, both combined, unseen tokens untouched, count_tokens correctness, out-of-range
+    token ignored
+- **`POST /v1/completions`** — legacy text-completion endpoint (issue #25)
+  - Accepts raw `prompt: String` instead of `messages`; tokenized and forwarded
+    directly to the inference worker without chat-template rendering
+  - Supports all sampling parameters: `max_tokens`, `temperature`, `top_p`, `stop`,
+    `seed`, `presence_penalty`, `frequency_penalty`
+  - Non-streaming: returns `CompletionResponse` (`object: "text_completion"`, id
+    prefix `"cmpl-"`, single `CompletionChoice` with `text` and `finish_reason`)
+  - Streaming: reuses SSE machinery from chat completions
+  - 7 integration tests covering 200 status, response shape, text content,
+    finish reason, usage, streaming status, and SSE content-type
+
+### Changed
+- `SamplingParams` gains `presence_penalty: f32` and `frequency_penalty: f32`
+  (both default `0.0`)
+- `handlers::chat_completions` passes penalty fields through to `SamplingParams`
+- Version bumped 0.8.0 → 0.9.0
+
+---
+
 ## [0.8.0] — 2026-04-09
 
 ### Added
@@ -276,7 +310,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/avarga1/vllm-hb/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/avarga1/vllm-hb/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/avarga1/vllm-hb/compare/v0.5.0...v0.6.0

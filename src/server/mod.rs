@@ -6,12 +6,13 @@
 //! - `metrics`  — Prometheus `/metrics` endpoint (stub)
 //!
 //! # Endpoints
-//! | Method | Path                      | Handler                   |
-//! |--------|---------------------------|---------------------------|
-//! | POST   | `/v1/chat/completions`    | `handlers::chat_completions` |
-//! | GET    | `/v1/models`              | `handlers::list_models`   |
-//! | GET    | `/health`                 | `handlers::health`        |
-//! | GET    | `/metrics`                | `metrics::handler` (stub) |
+//! | Method | Path                      | Handler                         |
+//! |--------|---------------------------|---------------------------------|
+//! | POST   | `/v1/chat/completions`    | `handlers::chat_completions`    |
+//! | POST   | `/v1/completions`         | `handlers::completions`         |
+//! | GET    | `/v1/models`              | `handlers::list_models`         |
+//! | GET    | `/health`                 | `handlers::health`              |
+//! | GET    | `/metrics`                | `metrics::handler` (stub)       |
 
 pub mod handlers;
 pub mod metrics;
@@ -51,6 +52,7 @@ pub struct AppState {
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
+        .route("/v1/completions", post(handlers::completions))
         .route("/v1/models", get(handlers::list_models))
         .route("/health", get(handlers::health))
         .route("/metrics", get(metrics::handler))

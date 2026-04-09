@@ -552,9 +552,36 @@ impl Worker {
     /// Sample the next token from `logits`, honouring any seed in `seq.params`
     /// and recording logprobs when requested.
     ///
+    /// Presence/frequency penalties are applied to `logits` before temperature
+    /// scaling so the penalties interact naturally with the rest of the pipeline.
     /// The seed is advanced by `seq_step` on each call so successive tokens
     /// within one seeded request are independently distributed.
     fn sample_token(&mut self, seq: &Sequence, logits: &candle_core::Tensor) -> Result<u32> {
+        // Apply presence/frequency penalties when non-zero and output has started.
+        let penalty_tensor: Option<candle_core::Tensor> = if (seq.params.presence_penalty.abs()
+            >= 1e-6
+            || seq.params.frequency_penalty.abs() >= 1e-6)
+            && !seq.output_ids.is_empty()
+        {
+            let vocab = logits.elem_count();
+            let mut lv: Vec<f32> = logits.to_dtype(candle_core::DType::F32)?.to_vec1()?;
+            let counts = sampling::penalty::count_tokens(&seq.output_ids, vocab);
+            sampling::penalty::apply_penalties(
+                &mut lv,
+                &counts,
+                seq.params.presence_penalty,
+                seq.params.frequency_penalty,
+            );
+            Some(candle_core::Tensor::from_vec(
+                lv,
+                (vocab,),
+                logits.device(),
+            )?)
+        } else {
+            None
+        };
+        let logits = penalty_tensor.as_ref().unwrap_or(logits);
+
         let temp = seq.params.temperature;
         let top_p = seq.params.top_p;
 

@@ -4,9 +4,11 @@
 //! - `nucleus`  — the math: apply_temperature, softmax, nucleus_filter, renormalize
 //! - `stop`     — stop-sequence matching (issue #21)
 //! - `logprobs` — per-token log-probability collection (issue #23)
+//! - `penalty`  — presence/frequency penalty application (issue #24)
 
 pub mod logprobs;
 pub mod nucleus;
+pub mod penalty;
 pub mod stop;
 
 use anyhow::Result;
