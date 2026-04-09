@@ -16,6 +16,14 @@ pub struct SamplingParams {
     pub top_p: f32,
     /// Stop strings — generation halts when any is matched in the output.
     pub stop: Vec<String>,
+    /// Optional RNG seed for reproducible sampling.  `None` uses the global
+    /// thread-local RNG.
+    pub seed: Option<u64>,
+    /// When `true`, per-token log-probabilities are collected and returned.
+    pub logprobs: bool,
+    /// Number of top-alternative log-probabilities per position.  Only
+    /// meaningful when `logprobs` is `true`.  Clamped to `[0, 20]`.
+    pub top_logprobs: u8,
 }
 
 impl Default for SamplingParams {
@@ -25,6 +33,9 @@ impl Default for SamplingParams {
             temperature: 0.7,
             top_p: 1.0,
             stop: Vec::new(),
+            seed: None,
+            logprobs: false,
+            top_logprobs: 0,
         }
     }
 }
@@ -60,6 +71,9 @@ pub enum GenerationEvent {
     Finished {
         finish_reason: FinishReason,
         stats: GenerationStats,
+        /// Per-token log-probability data.  `None` when `logprobs` was not
+        /// requested.
+        logprobs: Option<Vec<crate::sampling::logprobs::LogprobContent>>,
     },
     Error(String),
 }

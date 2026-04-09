@@ -22,7 +22,7 @@ use super::sse as sse_mod;
 use super::{AppState, unix_now};
 use crate::tokenize;
 use crate::types::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, Usage,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, ChoiceLogprobs, Usage,
 };
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, SamplingParams, WorkItem,
@@ -73,6 +73,9 @@ pub async fn chat_completions(
             temperature: req.temperature,
             top_p: req.top_p,
             stop: req.stop.clone(),
+            seed: req.seed,
+            logprobs: req.logprobs,
+            top_logprobs: req.top_logprobs.unwrap_or(0),
         },
         result_tx: event_tx,
     };
@@ -99,6 +102,7 @@ async fn collect_response(
     let mut token_texts = Vec::<String>::new();
     let mut finish = FinishReason::Length;
     let mut stats = GenerationStats::default();
+    let mut lp_data = None;
 
     while let Some(evt) = rx.recv().await {
         match evt {
@@ -106,9 +110,11 @@ async fn collect_response(
             GenerationEvent::Finished {
                 finish_reason,
                 stats: s,
+                logprobs,
             } => {
                 finish = finish_reason;
                 stats = s;
+                lp_data = logprobs;
                 break;
             }
             GenerationEvent::Error(e) => {
@@ -131,7 +137,7 @@ async fn collect_response(
                 tool_call_id: None,
             },
             finish_reason: finish.as_str(),
-            logprobs: None,
+            logprobs: lp_data.map(|content| ChoiceLogprobs { content }),
         }],
         usage: Usage {
             prompt_tokens: stats.prompt_tokens,
