@@ -22,6 +22,7 @@
 
 pub mod block_manager;
 pub mod policy;
+pub mod prefix_cache;
 pub mod sequence;
 
 use std::collections::{HashSet, VecDeque};
@@ -39,6 +40,13 @@ use crate::scheduler::{
 pub struct SchedulerOutputs {
     /// Groups whose prompt tokens need a prefill forward pass.
     pub to_prefill: Vec<SequenceGroup>,
+    /// Prefix-cache hit counts, parallel to `to_prefill`.
+    ///
+    /// `prefix_hit_blocks[i]` is the number of leading complete blocks that
+    /// were served from the prefix cache for `to_prefill[i]`.  A value of 0
+    /// means a full cold prefill.  The worker uses this to skip the matched
+    /// prefix tokens in the forward pass when KV state is available.
+    pub prefix_hit_blocks: Vec<usize>,
     /// Groups whose next token needs a decode forward pass.
     pub to_decode: Vec<SequenceGroup>,
     /// `(cpu_block, gpu_block)` pairs: blocks moved CPU → GPU this step.
@@ -56,6 +64,7 @@ impl SchedulerOutputs {
     fn empty() -> Self {
         Self {
             to_prefill: Vec::new(),
+            prefix_hit_blocks: Vec::new(),
             to_decode: Vec::new(),
             blocks_to_swap_in: Vec::new(),
             blocks_to_swap_out: Vec::new(),
@@ -223,11 +232,19 @@ impl Scheduler {
         for idx in &admit_indices {
             if will_admit.contains(idx) {
                 let mut group = waiting_opts[*idx].take().unwrap();
-                if self.block_manager.allocate(&group).is_ok() {
-                    for seq in &mut group.seqs {
-                        seq.status = SequenceStatus::Running;
+                match self.block_manager.allocate(&group) {
+                    Ok(result) => {
+                        for seq in &mut group.seqs {
+                            seq.status = SequenceStatus::Running;
+                        }
+                        out.prefix_hit_blocks.push(result.hit_blocks);
+                        out.to_prefill.push(group);
                     }
-                    out.to_prefill.push(group);
+                    Err(_) => {
+                        // Re-queue on allocation failure (shouldn't happen after
+                        // the can_allocate check above, but be safe).
+                        self.waiting.push_front(group);
+                    }
                 }
             }
         }
