@@ -21,6 +21,8 @@ use uuid::Uuid;
 use super::sse as sse_mod;
 use super::{AppState, unix_now};
 use crate::tokenize;
+use crate::tools::format::{detect_format, inject_tools};
+use crate::tools::parser::ToolCallParser;
 use crate::types::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, ChoiceLogprobs, Usage,
 };
@@ -54,7 +56,17 @@ pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
-    let prompt = match tokenize::apply_chat_template(&state.model_path, &req.messages) {
+    // Inject tool definitions into the system prompt when tools are provided.
+    let messages = if req.tools.is_empty() {
+        req.messages.clone()
+    } else {
+        let template = tokenize::load_chat_template(&state.model_path).unwrap_or_default();
+        let fmt = detect_format(&template);
+        let tool_system = inject_tools(&req.tools, fmt);
+        prepend_system(req.messages.clone(), tool_system)
+    };
+
+    let prompt = match tokenize::apply_chat_template(&state.model_path, &messages) {
         Ok(p) => p,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
     };
@@ -76,6 +88,7 @@ pub async fn chat_completions(
             seed: req.seed,
             logprobs: req.logprobs,
             top_logprobs: req.top_logprobs.unwrap_or(0),
+            has_tools: !req.tools.is_empty(),
         },
         result_tx: event_tx,
     };
@@ -103,6 +116,7 @@ async fn collect_response(
     let mut finish = FinishReason::Length;
     let mut stats = GenerationStats::default();
     let mut lp_data = None;
+    let mut raw_tool_calls = Vec::new();
 
     while let Some(evt) = rx.recv().await {
         match evt {
@@ -111,10 +125,12 @@ async fn collect_response(
                 finish_reason,
                 stats: s,
                 logprobs,
+                tool_calls,
             } => {
                 finish = finish_reason;
                 stats = s;
                 lp_data = logprobs;
+                raw_tool_calls = tool_calls;
                 break;
             }
             GenerationEvent::Error(e) => {
@@ -122,6 +138,21 @@ async fn collect_response(
             }
         }
     }
+
+    // When tool calls were detected the visible text may already be stripped
+    // by the worker, but token_texts contains the raw output — re-parse here
+    // to get the visible portion.
+    let (content, wire_tool_calls) = if !raw_tool_calls.is_empty() {
+        let full_raw = token_texts.join("");
+        let parsed = ToolCallParser::parse(&full_raw);
+        let tcs: Vec<_> = raw_tool_calls
+            .into_iter()
+            .map(|c| c.into_tool_call())
+            .collect();
+        (parsed.visible_text, Some(tcs))
+    } else {
+        (token_texts.join(""), None)
+    };
 
     Json(ChatCompletionResponse {
         id: format!("chatcmpl-{}", Uuid::new_v4()),
@@ -132,8 +163,8 @@ async fn collect_response(
             index: 0,
             message: ChatMessage {
                 role: "assistant".into(),
-                content: token_texts.join(""),
-                tool_calls: None,
+                content,
+                tool_calls: wire_tool_calls,
                 tool_call_id: None,
             },
             finish_reason: finish.as_str(),
@@ -146,6 +177,37 @@ async fn collect_response(
         },
     })
     .into_response()
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Prepend a system message containing `content` to `messages`.
+///
+/// If a system message already exists at position 0, its content is extended
+/// with a double newline + the tool definitions.  Otherwise a new system
+/// message is inserted at the front.
+fn prepend_system(mut messages: Vec<ChatMessage>, content: String) -> Vec<ChatMessage> {
+    if content.is_empty() {
+        return messages;
+    }
+    if messages
+        .first()
+        .map(|m| m.role == "system")
+        .unwrap_or(false)
+    {
+        messages[0].content = format!("{}\n\n{content}", messages[0].content);
+    } else {
+        messages.insert(
+            0,
+            ChatMessage {
+                role: "system".into(),
+                content,
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        );
+    }
+    messages
 }
 
 // ── Error helper ──────────────────────────────────────────────────────────────

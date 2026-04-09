@@ -56,6 +56,7 @@ use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::scheduler::{Scheduler, SchedulerOutputs};
 use crate::speculative::SpeculativeDecoder;
 use crate::tokenize;
+use crate::tools::parser::ToolCallParser;
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem,
 };
@@ -119,6 +120,9 @@ pub struct Worker {
     /// Per-sequence decode step counter used to advance the seed each step
     /// so successive tokens within a seeded request are independently sampled.
     seq_step: HashMap<u64, u64>,
+    /// Seq ids that had `tools` in their request — output is parsed for tool
+    /// calls on finish.
+    seq_has_tools: HashMap<u64, bool>,
 }
 
 impl Worker {
@@ -143,6 +147,7 @@ impl Worker {
                 stop_checkers: HashMap::new(),
                 logprob_collectors: HashMap::new(),
                 seq_step: HashMap::new(),
+                seq_has_tools: HashMap::new(),
             },
             WorkerHandle { tx },
         )
@@ -222,6 +227,11 @@ impl Worker {
         // Track decode step count for seed advancement.
         if item.params.seed.is_some() {
             self.seq_step.insert(id, 0);
+        }
+
+        // Note whether this request had tools so we can parse output on finish.
+        if item.params.has_tools {
+            self.seq_has_tools.insert(id, true);
         }
 
         let seq = Sequence::new(id, item.token_ids, item.params, item.result_tx);
@@ -483,8 +493,6 @@ impl Worker {
             FinishReason::Length
         };
 
-        seq.status = SequenceStatus::Finished(finish);
-
         let t_start = self.seq_start.remove(&seq.id).unwrap_or_else(Instant::now);
         let total_ms = t_start.elapsed().as_millis() as u64;
         let prompt_len = seq.prompt_ids.len();
@@ -507,11 +515,28 @@ impl Worker {
         );
 
         let logprobs = self.logprob_collectors.remove(&seq.id).map(|c| c.finish());
-
         self.seq_step.remove(&seq.id);
 
+        // Parse tool calls from the assembled output when tools were requested.
+        let had_tools = self.seq_has_tools.remove(&seq.id).unwrap_or(false);
+        let tool_calls = if had_tools {
+            let full_text = tokenize::decode(&self.tokenizer, &seq.output_ids).unwrap_or_default();
+            ToolCallParser::parse(&full_text).tool_calls
+        } else {
+            Vec::new()
+        };
+
+        let final_finish = if !tool_calls.is_empty() {
+            // Override finish_reason to "tool_calls" when a call was detected.
+            FinishReason::ToolCalls
+        } else {
+            finish
+        };
+
+        seq.status = SequenceStatus::Finished(final_finish);
+
         let _ = seq.result_tx.send(GenerationEvent::Finished {
-            finish_reason: finish,
+            finish_reason: final_finish,
             stats: GenerationStats {
                 prompt_tokens: prompt_len,
                 completion_tokens: gen_count,
@@ -520,6 +545,7 @@ impl Worker {
                 tokens_per_sec,
             },
             logprobs,
+            tool_calls,
         });
     }
 
