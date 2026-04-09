@@ -35,6 +35,20 @@ Versions follow [Semantic Versioning](https://semver.org/).
   - Probes 4 known safetensors key names (`model.embed_tokens.weight`, `transformer.wte.weight`, `model.wte.weight`, `embeddings.word_embeddings.weight`) across all architecture families
   - Loaded as F32 for CPU-side mean-pool; stored as `Option<Tensor>` in `Engine`
 - **`AppState`** gains `embed_tokens: Option<Tensor>` and `hidden_size: usize`; populated from engine before the worker takes ownership
+- **`POST /v1/files`** — upload a JSONL file for batch processing (issue #26)
+  - Accepts raw JSONL body; stores in-memory; returns an OpenAI-compatible `FileObject`
+  - File IDs are stable UUID-based identifiers reusable across batch/file endpoints
+- **`POST /v1/batches`** — submit an async batch job (issue #26)
+  - References an uploaded file by `input_file_id`; spawns a background Tokio task
+  - Status machine: `validating` → `in_progress` → `completed` | `failed` | `cancelled`
+  - `request_counts.{total, completed, failed}` updated in real time
+- **`GET /v1/batches/{id}`** — poll batch status; returns live `BatchObject`
+- **`GET /v1/files/{id}/content`** — retrieve output JSONL (`application/x-ndjson`)
+  - Each output line: `{id, custom_id, response: {status_code, body}, error}`
+- **`POST /v1/batches/{id}/cancel`** — cancel `validating` or `in_progress` batches
+- **`BatchStore`** (`src/batch/mod.rs`) — in-memory shared store for files + batches;
+  `Arc<Mutex<_>>` in `AppState`; zero external dependencies
+- 8 integration tests covering upload, create, poll, cancel, and error paths
 
 ### Algorithm (mean-pool + L2-norm)
 Input token IDs → index `embed_tokens [vocab, hidden]` → `[seq_len, hidden]` → mean across seq → `[hidden]` → L2-normalise → `Vec<f32>`. Fast (no transformer forward pass), deterministic, O(seq_len · hidden) — suitable for shared system-prompt caching and similarity search.
@@ -43,7 +57,7 @@ Input token IDs → index `embed_tokens [vocab, hidden]` → `[seq_len, hidden]`
 - `BlockManager::allocate()` signature changed from `-> Result<()>` to `-> Result<AllocResult>`
 - `SchedulerOutputs` gains `prefix_hit_blocks: Vec<usize>` field
 - `BlockManager::free()` registers completed prompt blocks in prefix cache on every free (content-hash preserved for hit detection on re-admission)
-- `AppState` gains `embed_tokens: Option<Tensor>` and `hidden_size: usize`
+- `AppState` gains `embed_tokens: Option<Tensor>`, `hidden_size: usize`, and `batch_store: Arc<Mutex<BatchStore>>`
 - Version bumped 0.9.0 → 0.10.0
 
 ### Notes

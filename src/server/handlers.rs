@@ -1,15 +1,21 @@
 //! Axum request handlers.
 //!
-//! Three endpoints:
+//! Endpoints:
 //!   `POST /v1/chat/completions`  — streaming + non-streaming generation
+//!   `POST /v1/completions`       — legacy text completions
 //!   `GET  /v1/models`            — model listing
 //!   `GET  /health`               — liveness probe
+//!   `POST /v1/files`             — upload a JSONL file for batch processing
+//!   `POST /v1/batches`           — submit a batch job
+//!   `GET  /v1/batches/{id}`      — poll batch status
+//!   `GET  /v1/files/{id}/content`— retrieve output JSONL
+//!   `POST /v1/batches/{id}/cancel` — cancel a pending batch
 
 use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::sse::KeepAlive,
     response::{IntoResponse, Response, Sse},
@@ -20,6 +26,10 @@ use uuid::Uuid;
 
 use super::sse as sse_mod;
 use super::{AppState, unix_now};
+use crate::batch::{
+    BatchObject, BatchStatus, CreateBatchRequest, FileObject, RequestCounts, StoredFile,
+    spawn_processor,
+};
 use crate::tokenize;
 use crate::tools::format::{detect_format, inject_tools};
 use crate::tools::parser::ToolCallParser;
@@ -394,6 +404,150 @@ fn prepend_system(mut messages: Vec<ChatMessage>, content: String) -> Vec<ChatMe
         );
     }
     messages
+}
+
+// ── Batch API ─────────────────────────────────────────────────────────────────
+
+/// `POST /v1/files` — upload a JSONL file for batch processing.
+///
+/// The request body must be the raw JSONL content (one request object per
+/// line).  The `Content-Type` should be `application/json` or `text/plain`;
+/// the body is treated as UTF-8 text regardless.
+///
+/// Returns a `FileObject` whose `id` can be passed to `POST /v1/batches`.
+pub async fn upload_file(State(state): State<Arc<AppState>>, body: String) -> impl IntoResponse {
+    let id = format!("file-{}", uuid::Uuid::new_v4().simple());
+    let bytes = body.len();
+    let now = unix_now();
+
+    let file = StoredFile {
+        id: id.clone(),
+        filename: "upload.jsonl".into(),
+        created_at: now,
+        content: body,
+    };
+
+    state
+        .batch_store
+        .lock()
+        .unwrap()
+        .files
+        .insert(id.clone(), file);
+
+    Json(FileObject {
+        id,
+        object: "file",
+        bytes,
+        created_at: now,
+        filename: "upload.jsonl".into(),
+        purpose: "batch",
+    })
+}
+
+/// `POST /v1/batches` — create and start a batch job.
+pub async fn create_batch(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateBatchRequest>,
+) -> Response {
+    // Verify the input file exists.
+    let file_exists = state
+        .batch_store
+        .lock()
+        .unwrap()
+        .files
+        .contains_key(&req.input_file_id);
+
+    if !file_exists {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            &format!("File {:?} not found", req.input_file_id),
+        );
+    }
+
+    let id = format!("batch_{}", uuid::Uuid::new_v4().simple());
+    let now = unix_now();
+
+    let batch = BatchObject {
+        id: id.clone(),
+        object: "batch",
+        endpoint: req.endpoint.clone(),
+        status: BatchStatus::Validating,
+        input_file_id: req.input_file_id.clone(),
+        output_file_id: None,
+        created_at: now,
+        completed_at: None,
+        failed_at: None,
+        request_counts: RequestCounts::default(),
+    };
+
+    state
+        .batch_store
+        .lock()
+        .unwrap()
+        .batches
+        .insert(id.clone(), batch.clone());
+
+    // Spawn background processor.
+    spawn_processor(
+        id,
+        req.input_file_id,
+        Arc::clone(&state.batch_store),
+        state.worker.clone(),
+        state.model_path.clone(),
+    );
+
+    Json(batch).into_response()
+}
+
+/// `GET /v1/batches/{id}` — poll batch status.
+pub async fn get_batch(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match state.batch_store.lock().unwrap().batches.get(&id).cloned() {
+        Some(b) => Json(b).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, &format!("Batch {:?} not found", id)),
+    }
+}
+
+/// `GET /v1/files/{id}/content` — retrieve output JSONL content.
+pub async fn get_file_content(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.batch_store.lock().unwrap().files.get(&id).cloned() {
+        Some(f) => (
+            StatusCode::OK,
+            [("content-type", "application/x-ndjson")],
+            f.content,
+        )
+            .into_response(),
+        None => error_response(StatusCode::NOT_FOUND, &format!("File {:?} not found", id)),
+    }
+}
+
+/// `POST /v1/batches/{id}/cancel` — cancel a pending or in-progress batch.
+///
+/// Currently, only batches in `validating` or `in_progress` state can be
+/// cancelled.  Already-completed batches return a 400.
+pub async fn cancel_batch(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let mut store = state.batch_store.lock().unwrap();
+    match store.batches.get_mut(&id) {
+        None => {
+            drop(store);
+            error_response(StatusCode::NOT_FOUND, &format!("Batch {:?} not found", id))
+        }
+        Some(b) if b.status == BatchStatus::Completed || b.status == BatchStatus::Failed => {
+            drop(store);
+            error_response(
+                StatusCode::BAD_REQUEST,
+                "Batch has already finished and cannot be cancelled",
+            )
+        }
+        Some(b) => {
+            b.status = BatchStatus::Cancelled;
+            let result = Json(b.clone()).into_response();
+            drop(store);
+            result
+        }
+    }
 }
 
 // ── Error helper ──────────────────────────────────────────────────────────────
