@@ -399,6 +399,79 @@ mod defaults {
     pub fn top_p() -> f32 {
         1.0
     }
+    pub fn encoding_format() -> String {
+        "float".into()
+    }
+}
+
+// ── Embeddings (issue #29) ────────────────────────────────────────────────────
+
+/// `POST /v1/embeddings` request body.
+///
+/// Accepts a single string or a list of strings to embed.  Matches the
+/// OpenAI Embeddings API so existing clients (LangChain, LlamaIndex, etc.)
+/// work without modification.
+#[derive(Debug, Deserialize)]
+pub struct EmbeddingRequest {
+    /// Model name — echoed back in the response.
+    pub model: String,
+    /// Text(s) to embed.  A single string or a JSON array of strings.
+    pub input: EmbeddingInput,
+    /// Output encoding format.  Only `"float"` is supported; `"base64"` is
+    /// rejected with 400.
+    #[serde(default = "defaults::encoding_format")]
+    pub encoding_format: String,
+}
+
+/// `input` field — a single string or an array of strings.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    Single(String),
+    Batch(Vec<String>),
+}
+
+impl EmbeddingInput {
+    /// Normalise to a `Vec<String>` regardless of input form.
+    pub fn into_strings(self) -> Vec<String> {
+        match self {
+            Self::Single(s) => vec![s],
+            Self::Batch(v) => v,
+        }
+    }
+}
+
+/// `POST /v1/embeddings` response body.
+#[derive(Debug, Serialize)]
+pub struct EmbeddingResponse {
+    /// Always `"list"`.
+    pub object: &'static str,
+    /// One `EmbeddingObject` per input string.
+    pub data: Vec<EmbeddingObject>,
+    /// Echoed model name.
+    pub model: String,
+    /// Token usage (prompt tokens only; no completions for embeddings).
+    pub usage: EmbeddingUsage,
+}
+
+/// One embedding result inside an [`EmbeddingResponse`].
+#[derive(Debug, Serialize)]
+pub struct EmbeddingObject {
+    /// Always `"embedding"`.
+    pub object: &'static str,
+    /// Zero-based index in the input array.
+    pub index: usize,
+    /// The embedding vector.
+    pub embedding: Vec<f32>,
+}
+
+/// Token usage for an embedding request.
+#[derive(Debug, Serialize)]
+pub struct EmbeddingUsage {
+    /// Number of prompt tokens processed across all inputs.
+    pub prompt_tokens: usize,
+    /// Always `0` for embeddings — no tokens are generated.
+    pub total_tokens: usize,
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

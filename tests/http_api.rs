@@ -78,6 +78,22 @@ fn mock_worker() -> (WorkerHandle, tokio::task::JoinHandle<()>) {
     (handle, task)
 }
 
+/// Dimension of the fake embedding table used in tests.
+const TEST_HIDDEN: usize = 8;
+
+/// Build a small random embedding table `[vocab_size, hidden]` for tests.
+///
+/// Uses a deterministic pattern (token_id * 0.01 per column) so the output
+/// is stable across runs.
+fn fixture_embed_tokens() -> candle_core::Tensor {
+    let tokenizer = fixture_tokenizer();
+    let vocab = tokenizer.get_vocab_size(true);
+    let data: Vec<f32> = (0..vocab)
+        .flat_map(|id| (0..TEST_HIDDEN).map(move |col| id as f32 * 0.01 + col as f32 * 0.001))
+        .collect();
+    candle_core::Tensor::from_vec(data, (vocab, TEST_HIDDEN), &candle_core::Device::Cpu).unwrap()
+}
+
 /// Build a test `AppState` with the fixture tokenizer and mock worker.
 fn test_state() -> Arc<AppState> {
     let (worker, _task) = mock_worker();
@@ -86,6 +102,8 @@ fn test_state() -> Arc<AppState> {
         tokenizer: fixture_tokenizer(),
         model_name: "test-model".into(),
         model_path: FIXTURE_MODEL_PATH.into(),
+        embed_tokens: Some(fixture_embed_tokens()),
+        hidden_size: TEST_HIDDEN,
     })
 }
 
@@ -459,6 +477,144 @@ async fn completion_streaming_event_stream() {
         .to_str()
         .unwrap();
     assert!(ct.contains("text/event-stream"), "Content-Type was: {ct}");
+}
+
+// ── Embeddings ────────────────────────────────────────────────────────────────
+
+fn embedding_request(body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/embeddings")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn embedding_returns_200() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "Hello world"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn embedding_response_shape() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "Hello"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    assert_eq!(body["object"], "list");
+    assert_eq!(body["model"], "test-model");
+    assert!(body["data"].is_array());
+    assert_eq!(body["data"][0]["object"], "embedding");
+    assert_eq!(body["data"][0]["index"], 0);
+}
+
+#[tokio::test]
+async fn embedding_vector_dimension() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "Hello"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    let emb = body["data"][0]["embedding"].as_array().unwrap();
+    assert_eq!(
+        emb.len(),
+        TEST_HIDDEN,
+        "embedding dimension should match hidden size"
+    );
+}
+
+#[tokio::test]
+async fn embedding_is_l2_normalized() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "normalise me"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    let emb: Vec<f64> = body["data"][0]["embedding"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    let norm: f64 = emb.iter().map(|x| x * x).sum::<f64>().sqrt();
+    assert!(
+        (norm - 1.0).abs() < 1e-4,
+        "embedding L2 norm should be ~1, got {norm}"
+    );
+}
+
+#[tokio::test]
+async fn embedding_batch_input() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": ["first sentence", "second sentence"]
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["index"], 0);
+    assert_eq!(data[1]["index"], 1);
+}
+
+#[tokio::test]
+async fn embedding_usage_present() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "count my tokens"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    let body = body_json(resp).await;
+
+    assert!(body["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+    assert_eq!(
+        body["usage"]["prompt_tokens"],
+        body["usage"]["total_tokens"]
+    );
+}
+
+#[tokio::test]
+async fn embedding_invalid_encoding_format_returns_400() {
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "hello",
+        "encoding_format": "base64"
+    }));
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn embedding_no_embed_table_returns_501() {
+    // Build state with embed_tokens = None.
+    let (worker, _task) = mock_worker();
+    let state = Arc::new(AppState {
+        worker,
+        tokenizer: fixture_tokenizer(),
+        model_name: "test-model".into(),
+        model_path: FIXTURE_MODEL_PATH.into(),
+        embed_tokens: None,
+        hidden_size: TEST_HIDDEN,
+    });
+    let req = embedding_request(json!({
+        "model": "test-model",
+        "input": "hi"
+    }));
+    let resp = vllm_hb::server::router(state).oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
 // ── Error handling ────────────────────────────────────────────────────────────

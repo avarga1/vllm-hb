@@ -163,6 +163,10 @@ async fn serve(args: ServeArgs) -> Result<()> {
         None
     };
 
+    // Extract before engine is moved into the worker.
+    let embed_tokens = engine.embed_tokens_clone();
+    let hidden_size = engine.hidden_size();
+
     let (worker, handle) = worker::Worker::new(engine, tokenizer.clone(), eos_tokens, spec_decoder);
     tokio::spawn(worker.run());
 
@@ -179,6 +183,8 @@ async fn serve(args: ServeArgs) -> Result<()> {
         tokenizer,
         model_name,
         model_path: args.model,
+        embed_tokens,
+        hidden_size,
     });
 
     let addr = format!("{}:{}", args.host, args.port);

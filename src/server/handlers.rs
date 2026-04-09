@@ -25,7 +25,8 @@ use crate::tools::format::{detect_format, inject_tools};
 use crate::tools::parser::ToolCallParser;
 use crate::types::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, Choice, ChoiceLogprobs,
-    CompletionChoice, CompletionRequest, CompletionResponse, Usage,
+    CompletionChoice, CompletionRequest, CompletionResponse, EmbeddingObject, EmbeddingRequest,
+    EmbeddingResponse, EmbeddingUsage, Usage,
 };
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, SamplingParams, WorkItem,
@@ -196,6 +197,99 @@ async fn collect_completion(
         },
     })
     .into_response()
+}
+
+// ── Embeddings ────────────────────────────────────────────────────────────────
+
+pub async fn embeddings(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<EmbeddingRequest>,
+) -> Response {
+    // Only float output is supported.
+    if req.encoding_format != "float" {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "encoding_format {:?} is not supported — use \"float\"",
+                req.encoding_format
+            ),
+        );
+    }
+
+    let embed_table = match &state.embed_tokens {
+        Some(t) => t,
+        None => {
+            return error_response(
+                StatusCode::NOT_IMPLEMENTED,
+                "This model does not expose a token embedding matrix — \
+                 load a dedicated embedding model for /v1/embeddings",
+            );
+        }
+    };
+
+    let inputs = req.input.into_strings();
+    let mut data = Vec::with_capacity(inputs.len());
+    let mut total_prompt_tokens = 0usize;
+
+    for (index, text) in inputs.iter().enumerate() {
+        let token_ids = match tokenize::encode(&state.tokenizer, text) {
+            Ok(ids) => ids,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &e.to_string()),
+        };
+
+        if token_ids.is_empty() {
+            data.push(EmbeddingObject {
+                object: "embedding",
+                index,
+                embedding: vec![0.0_f32; state.hidden_size],
+            });
+            continue;
+        }
+
+        total_prompt_tokens += token_ids.len();
+
+        // Index embed_table [vocab, hidden] with token_ids → [seq_len, hidden].
+        let embedding = match embed_mean_pool(embed_table, &token_ids) {
+            Ok(v) => v,
+            Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        };
+
+        data.push(EmbeddingObject {
+            object: "embedding",
+            index,
+            embedding,
+        });
+    }
+
+    Json(EmbeddingResponse {
+        object: "list",
+        data,
+        model: req.model,
+        usage: EmbeddingUsage {
+            prompt_tokens: total_prompt_tokens,
+            total_tokens: total_prompt_tokens,
+        },
+    })
+    .into_response()
+}
+
+/// Index into `embed_table` with `token_ids`, mean-pool, L2-normalise.
+///
+/// Performed on CPU in F32; the embed_table tensor was loaded as F32 in
+/// `Engine::load`.  For GPU-backed tables this adds a cheap device→host
+/// transfer for the indexed rows only.
+fn embed_mean_pool(
+    embed_table: &candle_core::Tensor,
+    token_ids: &[u32],
+) -> anyhow::Result<Vec<f32>> {
+    use candle_core::Device;
+    let device = Device::Cpu;
+    let ids = candle_core::Tensor::new(token_ids, &device)?;
+    let rows = embed_table.to_device(&device)?.index_select(&ids, 0)?;
+    let mean = rows.mean(0)?;
+    let v: Vec<f32> = mean.to_vec1()?;
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9_f32);
+    Ok(v.iter().map(|x| x / norm).collect())
 }
 
 // ── Non-streaming collection ──────────────────────────────────────────────────
