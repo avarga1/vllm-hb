@@ -50,6 +50,7 @@ use tokio::sync::mpsc;
 
 use crate::engine::{Engine, PerSeqCache};
 use crate::sampling;
+use crate::sampling::stop::StopChecker;
 use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::scheduler::{Scheduler, SchedulerOutputs};
 use crate::speculative::SpeculativeDecoder;
@@ -108,6 +109,9 @@ pub struct Worker {
     /// When present, `step_decode` uses speculative drafting instead of
     /// single-token greedy/sampled decoding.
     spec_decoder: Option<SpeculativeDecoder>,
+    /// Per-sequence stop-sequence checkers.  `None` when the request had no
+    /// stop strings; present and checked after every emitted token.
+    stop_checkers: HashMap<u64, StopChecker>,
 }
 
 impl Worker {
@@ -129,6 +133,7 @@ impl Worker {
                 seq_start: HashMap::new(),
                 next_seq_id: 0,
                 spec_decoder,
+                stop_checkers: HashMap::new(),
             },
             WorkerHandle { tx },
         )
@@ -193,6 +198,11 @@ impl Worker {
         self.next_seq_id += 1;
 
         self.seq_start.insert(id, Instant::now());
+
+        // Register a stop checker for this sequence if the request has stop strings.
+        if let Some(checker) = StopChecker::new(item.params.stop.clone()) {
+            self.stop_checkers.insert(id, checker);
+        }
 
         let seq = Sequence::new(id, item.token_ids, item.params, item.result_tx);
         let group = SequenceGroup::new(item.id.clone(), vec![seq]);
@@ -414,19 +424,39 @@ impl Worker {
         self.eos_tokens
             .contains(seq.output_ids.last().unwrap_or(&0))
             || seq.output_ids.len() >= seq.params.max_tokens
+            || self
+                .stop_checkers
+                .get(&seq.id)
+                .is_some_and(|c| c.matched().is_some())
     }
 
-    fn emit_token(&self, seq: &Sequence, token_id: u32) {
+    /// Decode `token_id` to text, push it to the stop checker (if any), and
+    /// send a `Token` event to the handler.  Returns the decoded text.
+    fn emit_token(&mut self, seq: &Sequence, token_id: u32) -> String {
         let text = tokenize::decode(&self.tokenizer, &[token_id]).unwrap_or_default();
-        let _ = seq
-            .result_tx
-            .send(GenerationEvent::Token(TokenEvent { id: token_id, text }));
+
+        if let Some(checker) = self.stop_checkers.get_mut(&seq.id) {
+            checker.push(&text);
+        }
+
+        let _ = seq.result_tx.send(GenerationEvent::Token(TokenEvent {
+            id: token_id,
+            text: text.clone(),
+        }));
+
+        text
     }
 
     fn finish_seq(&mut self, seq: &mut Sequence) {
+        let stop_matched = self
+            .stop_checkers
+            .remove(&seq.id)
+            .and_then(|c| c.matched().map(str::to_owned));
+
         let finish = if self
             .eos_tokens
             .contains(seq.output_ids.last().unwrap_or(&0))
+            || stop_matched.is_some()
         {
             FinishReason::Stop
         } else {

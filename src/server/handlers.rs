@@ -72,6 +72,7 @@ pub async fn chat_completions(
             max_tokens: req.max_tokens,
             temperature: req.temperature,
             top_p: req.top_p,
+            stop: req.stop.clone(),
         },
         result_tx: event_tx,
     };

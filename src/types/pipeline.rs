@@ -14,6 +14,8 @@ pub struct SamplingParams {
     pub max_tokens: usize,
     pub temperature: f32,
     pub top_p: f32,
+    /// Stop strings — generation halts when any is matched in the output.
+    pub stop: Vec<String>,
 }
 
 impl Default for SamplingParams {
@@ -22,6 +24,7 @@ impl Default for SamplingParams {
             max_tokens: 512,
             temperature: 0.7,
             top_p: 1.0,
+            stop: Vec::new(),
         }
     }
 }
