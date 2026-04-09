@@ -16,6 +16,7 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{Result, bail};
 
+use super::prefix_cache::{PrefixCache, hash_block};
 use super::sequence::SequenceGroup;
 
 // ── Block size ────────────────────────────────────────────────────────────────
@@ -110,12 +111,33 @@ pub struct BlockTable {
 
 // ── BlockManager ──────────────────────────────────────────────────────────────
 
+/// Maximum number of blocks kept in the prefix cache.
+const PREFIX_CACHE_CAPACITY: usize = 128;
+
+/// Result of a `BlockManager::allocate` call.
+///
+/// `hit_blocks` is the number of leading prompt blocks that were served from
+/// the prefix cache.  The worker uses this to skip the corresponding tokens
+/// in the prefill forward pass when the sequence's KV cache has been
+/// pre-populated via `PerSeqCache::try_restore_prefix`.
+#[derive(Debug, Default)]
+pub struct AllocResult {
+    /// Number of complete prompt blocks that were cache hits.
+    pub hit_blocks: usize,
+}
+
 pub struct BlockManager {
     block_size: usize,
     gpu: BlockAllocator,
     cpu: BlockAllocator,
     /// seq_id → block table (GPU blocks).
     block_tables: HashMap<u64, BlockTable>,
+    /// Prefix block cache — maps token-block hash → physical block id.
+    prefix_cache: PrefixCache,
+    /// Reverse map: physical block id → token-block hash.
+    /// Populated for every fully-filled prompt block so we can register it
+    /// with the prefix cache when the sequence is freed.
+    block_hashes: HashMap<usize, u64>,
 }
 
 impl BlockManager {
@@ -125,7 +147,14 @@ impl BlockManager {
             gpu: BlockAllocator::new(BlockDevice::Gpu, num_gpu_blocks),
             cpu: BlockAllocator::new(BlockDevice::Cpu, num_cpu_blocks),
             block_tables: HashMap::new(),
+            prefix_cache: PrefixCache::new(PREFIX_CACHE_CAPACITY),
+            block_hashes: HashMap::new(),
         }
+    }
+
+    /// Number of blocks currently held in the prefix cache.
+    pub fn num_prefix_cached_blocks(&self) -> usize {
+        self.prefix_cache.len()
     }
 
     pub fn block_size(&self) -> usize {
@@ -151,31 +180,95 @@ impl BlockManager {
 
     /// Allocate GPU blocks for every sequence in the group.
     ///
+    /// For each complete (full) leading block of the prompt, checks the prefix
+    /// cache first.  A cache hit re-uses the existing physical block (ref-count
+    /// incremented) rather than allocating a fresh one.  Cache misses fall
+    /// through to normal allocation.
+    ///
+    /// Returns an [`AllocResult`] whose `hit_blocks` field indicates how many
+    /// leading prompt blocks were served from the cache.  The worker uses this
+    /// to skip those tokens in the prefill forward pass when the sequence's KV
+    /// state has been pre-populated (see `PerSeqCache::try_restore_prefix`).
+    ///
     /// Call after `can_allocate` returns `true`.
-    pub fn allocate(&mut self, group: &SequenceGroup) -> Result<()> {
+    pub fn allocate(&mut self, group: &SequenceGroup) -> Result<AllocResult> {
         let needed = group.num_logical_blocks(self.block_size);
-        if needed > self.gpu.num_free() {
+        // Cache hits reduce the number of fresh blocks needed — but we still
+        // need to verify we can cover any uncached blocks.
+        if needed > self.gpu.num_free() + self.prefix_cache.len() {
             bail!(
-                "not enough GPU blocks: need {needed}, have {}",
-                self.gpu.num_free()
+                "not enough GPU blocks: need {needed}, have {} free + {} cached",
+                self.gpu.num_free(),
+                self.prefix_cache.len(),
             );
         }
+
+        let mut total_hit_blocks = 0usize;
+
         for seq in &group.seqs {
             let mut table = BlockTable::default();
-            for _ in 0..needed {
-                let id = self.gpu.allocate().unwrap();
+            let mut seq_hits = 0usize;
+
+            // Check complete leading prompt blocks against the prefix cache.
+            let num_complete = seq.prompt_ids.len() / self.block_size;
+            for block_idx in 0..num_complete {
+                let start = block_idx * self.block_size;
+                let end = start + self.block_size;
+                let hash = hash_block(&seq.prompt_ids[start..end]);
+
+                if let Some(cached_id) = self.prefix_cache.lookup(hash) {
+                    // Cache hit — bump ref count and re-use the physical block.
+                    self.gpu.increment_ref(cached_id);
+                    table.blocks.push(cached_id);
+                    seq_hits += 1;
+                } else {
+                    // Cache miss — allocate a fresh block.
+                    let id = self
+                        .gpu
+                        .allocate()
+                        .ok_or_else(|| anyhow::anyhow!("no free GPU blocks for allocation"))?;
+                    table.blocks.push(id);
+                    // Remember what content this block holds so we can cache it on free.
+                    self.block_hashes.insert(id, hash);
+                }
+            }
+
+            // Allocate any remaining partial (tail) block fresh.
+            let remaining = needed - num_complete;
+            for _ in 0..remaining {
+                let id = self
+                    .gpu
+                    .allocate()
+                    .ok_or_else(|| anyhow::anyhow!("no free GPU blocks for allocation"))?;
                 table.blocks.push(id);
             }
+
+            total_hit_blocks = total_hit_blocks.max(seq_hits);
             self.block_tables.insert(seq.id, table);
         }
-        Ok(())
+
+        Ok(AllocResult {
+            hit_blocks: total_hit_blocks,
+        })
     }
 
     /// Free all GPU blocks held by a sequence group.
+    ///
+    /// All blocks are returned to the GPU free pool.  Complete prompt blocks
+    /// whose content hash is known are additionally registered in the prefix
+    /// cache so that future sequences with the same prompt prefix are counted
+    /// as hits.  Because the KV tensors in our architecture live in
+    /// `PerSeqCache` (not in the physical block), the physical block is freed
+    /// immediately; the prefix cache tracks the content hash for hit detection
+    /// and worker-level KV restore decisions.
     pub fn free(&mut self, group: &SequenceGroup) {
         for seq in &group.seqs {
             if let Some(table) = self.block_tables.remove(&seq.id) {
                 for block_id in table.blocks {
+                    // Register hashed blocks in the prefix cache before freeing.
+                    if let Some(&hash) = self.block_hashes.get(&block_id) {
+                        self.prefix_cache.insert(hash, block_id);
+                    }
                     self.gpu.free(block_id);
                 }
             }

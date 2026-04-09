@@ -11,6 +11,30 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.10.0] — 2026-04-09
+
+### Added
+- **Automatic prefix caching** (`src/scheduler/prefix_cache.rs`, issue #27)
+  - `PrefixCache` — LRU-approximated block-hash cache mapping FNV-1a token-block hashes to physical block IDs; capacity-bounded (default 128 entries) with FIFO eviction
+  - `hash_block(tokens: &[u32]) -> u64` — FNV-1a 64-bit hash, deterministic and order-sensitive
+  - `BlockManager::allocate()` — checks complete leading prompt blocks against the prefix cache before allocating fresh blocks; cache hits re-use the existing physical block (ref-count incremented)
+  - `AllocResult { hit_blocks: usize }` — returned by `allocate()` so the worker knows how many prefix blocks were matched
+  - `SchedulerOutputs::prefix_hit_blocks` — parallel vec to `to_prefill`, carries per-group hit counts from scheduler to worker
+  - Worker `step_prefill()` receives hit count and logs prefix cache hits; structured for KV restore once `PerSeqCache::try_restore_prefix` is wired per architecture
+  - `BlockManager::num_prefix_cached_blocks()` for observability
+  - 9 unit tests: hash determinism, hash collision resistance, order sensitivity, miss on empty, insert+lookup, eviction, remove by block ID, len tracking, same-hash update
+
+### Changed
+- `BlockManager::allocate()` signature changed from `-> Result<()>` to `-> Result<AllocResult>`
+- `SchedulerOutputs` gains `prefix_hit_blocks: Vec<usize>` field
+- `BlockManager::free()` registers completed prompt blocks in prefix cache on every free (content-hash preserved for hit detection on re-admission)
+- Version bumped 0.9.0 → 0.10.0
+
+### Notes
+- Full KV-tensor reuse (skipping the GPU forward pass for matched prefix positions) requires architecture-specific `PerSeqCache::try_restore_prefix` implementations. The infrastructure is in place; tensor restore is tracked separately.
+
+---
+
 ## [0.9.0] — 2026-04-08
 
 ### Added
@@ -310,7 +334,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/avarga1/vllm-hb/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/avarga1/vllm-hb/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/avarga1/vllm-hb/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...v0.7.0

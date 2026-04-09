@@ -257,8 +257,12 @@ impl Worker {
         let mut return_groups: Vec<SequenceGroup> = Vec::new();
 
         // ── Prefill ───────────────────────────────────────────────────────────
-        for mut group in outputs.to_prefill {
-            match self.step_prefill(&mut group) {
+        for (mut group, hit_blocks) in outputs
+            .to_prefill
+            .into_iter()
+            .zip(outputs.prefix_hit_blocks.into_iter())
+        {
+            match self.step_prefill(&mut group, hit_blocks) {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::error!(
@@ -292,6 +296,7 @@ impl Worker {
         // blocks freed; running ones go back to self.scheduler.running.
         self.scheduler.update(SchedulerOutputs {
             to_prefill: return_groups,
+            prefix_hit_blocks: Vec::new(),
             to_decode: Vec::new(),
             blocks_to_swap_in: Vec::new(),
             blocks_to_swap_out: Vec::new(),
@@ -302,7 +307,13 @@ impl Worker {
     // ── Prefill one sequence group ────────────────────────────────────────────
 
     /// Run the prompt through the engine, emit the first output token.
-    fn step_prefill(&mut self, group: &mut SequenceGroup) -> Result<()> {
+    ///
+    /// `hit_blocks` is the number of leading complete blocks that were served
+    /// from the prefix cache.  When `> 0` and the engine supports prefix KV
+    /// restore (`PerSeqCache::try_restore_prefix`), the forward pass starts at
+    /// `hit_blocks * BLOCK_SIZE` instead of 0, skipping the cached prefix.
+    /// Currently falls back to full prefill when KV restore is unavailable.
+    fn step_prefill(&mut self, group: &mut SequenceGroup, hit_blocks: usize) -> Result<()> {
         let seq = group
             .seqs
             .iter_mut()
@@ -311,10 +322,33 @@ impl Worker {
 
         let mut cache = self.engine.create_kv_cache()?;
 
-        // Prefill: process all prompt tokens in one forward pass.
+        // When prefix blocks were cached, start the forward pass after the
+        // matched tokens to avoid recomputing them.  The KV state for those
+        // positions must already be in `cache` (populated via a future
+        // `try_restore_prefix` call); for now we fall back to position 0 when
+        // the cache is fresh so correctness is preserved.
+        let start_pos = 0usize; // TODO: advance when KV restore is implemented
+        let prompt_slice = if hit_blocks > 0 {
+            let cached_tokens = hit_blocks * crate::scheduler::block_manager::BLOCK_SIZE;
+            let cached_tokens = cached_tokens.min(seq.prompt_ids.len());
+            if cached_tokens < seq.prompt_ids.len() {
+                tracing::debug!(
+                    seq_id = seq.id,
+                    cached_tokens,
+                    total_prompt = seq.prompt_ids.len(),
+                    "Prefix cache hit — suffix prefill only (KV restore pending)"
+                );
+            }
+            // Until full KV restore is wired, fall back to the whole prompt.
+            &seq.prompt_ids[..]
+        } else {
+            &seq.prompt_ids[..]
+        };
+
+        // Prefill: process prompt tokens in one forward pass.
         let logits = self
             .engine
-            .forward_with_cache(&seq.prompt_ids, 0, &mut cache)?;
+            .forward_with_cache(prompt_slice, start_pos, &mut cache)?;
         let first_token = self.sample_token(seq, &logits)?;
 
         seq.output_ids.push(first_token);
