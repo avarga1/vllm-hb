@@ -11,6 +11,45 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.8.0] — 2026-04-09
+
+### Added
+- **Stop sequences** (`src/sampling/stop.rs`, issue #21)
+  - `StopChecker` — rolling suffix buffer, O(|stop_strings|) per token, char-boundary safe
+  - Up to 4 stop strings per request; matched suffix stripped from final output
+  - `finish_reason` is `"stop"` on stop-string match
+  - 8 unit tests: empty list, blank filter, no match, exact match, split-token match,
+    strip, buffer trimming, multi-stop
+- **Seed + logprobs** (`src/sampling/logprobs.rs`, issue #23)
+  - `seed: u64` — reproducible sampling via `SmallRng` seeded per-token (seed mixed
+    with step counter so successive tokens are independently distributed)
+  - `logprobs: bool` + `top_logprobs: u8` — `LogprobCollector` records chosen token
+    log-prob + top-N alternatives sorted descending; bytes field populated; attached
+    to response `Choice`
+  - `sampling::logits_to_probs()` — shared prob computation for sampling + collection
+  - 6 unit tests: chosen token, top-N excludes chosen, sorted descending, clamp,
+    multiple records, bytes field
+- **Tool calls — JSON + XML** (`src/tools/`, issue #22)
+  - `src/tools/format.rs` — `inject_tools()` renders tool definitions as JSON schema
+    block (Llama/Qwen/Mistral) or XML `<tools>` block (Hermes/Claude-style);
+    `detect_format()` auto-selects from chat template string; 8 unit tests
+  - `src/tools/parser.rs` — `ToolCallParser` detects + parses both formats from raw
+    model output; JSON-block (bare object or ` ```json ` fence, balanced brace matching);
+    XML (`<function_calls><invoke name="..."><parameter ...>`) with multi-call support;
+    parameters auto-typed (numeric stays numeric); 10 unit tests
+  - `FinishReason::ToolCalls` — finish reason is `"tool_calls"` when a call is detected
+  - Tool definitions injected into system prompt before generation; markup stripped
+    from visible assistant text in response
+  - `tokenize::load_chat_template()` for format auto-detection
+
+### Changed
+- `SamplingParams` gains `stop`, `seed`, `logprobs`, `top_logprobs`, `has_tools`
+- `GenerationEvent::Finished` gains `logprobs` and `tool_calls` fields
+- `rand` dependency gains `small_rng` feature for `SmallRng`
+- Version bumped 0.7.0 → 0.8.0
+
+---
+
 ## [0.7.0] — 2026-04-08
 
 ### Added
@@ -237,7 +276,8 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/avarga1/vllm-hb/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/avarga1/vllm-hb/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/avarga1/vllm-hb/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/avarga1/vllm-hb/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/avarga1/vllm-hb/compare/v0.4.0...v0.5.0
