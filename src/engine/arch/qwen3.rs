@@ -36,7 +36,8 @@ impl Qwen3Backend {
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         let input = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
         let logits = self.model.lock().forward(&input, seq_pos)?;
-        Ok(logits.squeeze(0)?)
+        let seq_len = logits.dim(1)?;
+        Ok(logits.squeeze(0)?.get(seq_len - 1)?)
     }
 
     pub fn reset_cache(&self) -> Result<()> {
