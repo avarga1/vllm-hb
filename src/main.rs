@@ -11,6 +11,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
+use vllm_hb::batch::BatchStore;
 use vllm_hb::bench;
 use vllm_hb::engine::{self, ModelConfig};
 use vllm_hb::server;
@@ -185,6 +186,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         model_path: args.model,
         embed_tokens,
         hidden_size,
+        batch_store: Arc::new(std::sync::Mutex::new(BatchStore::new())),
     });
 
     let addr = format!("{}:{}", args.host, args.port);

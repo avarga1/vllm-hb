@@ -8,6 +8,7 @@
 //! to the public API here.
 
 // Working modules
+pub mod batch;
 pub mod bench;
 pub mod engine;
 pub mod sampling;

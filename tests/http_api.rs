@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tower::ServiceExt; // oneshot
 
 use vllm_hb::{
+    batch::BatchStore,
     server::AppState,
     types::pipeline::{FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem},
     worker::WorkerHandle,
@@ -104,6 +105,7 @@ fn test_state() -> Arc<AppState> {
         model_path: FIXTURE_MODEL_PATH.into(),
         embed_tokens: Some(fixture_embed_tokens()),
         hidden_size: TEST_HIDDEN,
+        batch_store: Arc::new(std::sync::Mutex::new(BatchStore::new())),
     })
 }
 
@@ -608,6 +610,7 @@ async fn embedding_no_embed_table_returns_501() {
         model_path: FIXTURE_MODEL_PATH.into(),
         embed_tokens: None,
         hidden_size: TEST_HIDDEN,
+        batch_store: Arc::new(std::sync::Mutex::new(BatchStore::new())),
     });
     let req = embedding_request(json!({
         "model": "test-model",
@@ -636,6 +639,186 @@ async fn chat_invalid_json_returns_422() {
 async fn unknown_route_returns_404() {
     let req = Request::builder()
         .uri("/nonexistent")
+        .body(Body::empty())
+        .unwrap();
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+// ── Batch API ─────────────────────────────────────────────────────────────────
+
+/// Helper: POST to `/v1/files` with the given JSONL body.
+async fn upload_jsonl(router: axum::Router, jsonl: &str) -> Value {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/files")
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(jsonl.to_string()))
+        .unwrap();
+    let resp = router.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await
+}
+
+#[tokio::test]
+async fn upload_file_returns_file_object() {
+    let jsonl = r#"{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}"#;
+    let body = upload_jsonl(test_router(), jsonl).await;
+    assert_eq!(body["object"], "file");
+    assert!(body["id"].as_str().unwrap().starts_with("file-"));
+    assert_eq!(body["purpose"], "batch");
+    assert!(body["bytes"].as_u64().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn create_batch_returns_batch_object() {
+    let state = test_state();
+    let router = vllm_hb::server::router(Arc::clone(&state));
+
+    // Upload file first.
+    let jsonl = r#"{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}"#;
+    let file = upload_jsonl(router.clone(), jsonl).await;
+    let file_id = file["id"].as_str().unwrap().to_string();
+
+    // Create batch.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/batches")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "input_file_id": file_id,
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = vllm_hb::server::router(Arc::clone(&state))
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["object"], "batch");
+    assert!(body["id"].as_str().unwrap().starts_with("batch_"));
+    assert_eq!(body["input_file_id"], file_id);
+}
+
+#[tokio::test]
+async fn create_batch_unknown_file_returns_404() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/batches")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "input_file_id": "file-doesnotexist",
+                "endpoint": "/v1/chat/completions"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_batch_returns_status() {
+    let state = test_state();
+
+    // Upload file.
+    let jsonl = r#"{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}"#;
+    let file = upload_jsonl(vllm_hb::server::router(Arc::clone(&state)), jsonl).await;
+    let file_id = file["id"].as_str().unwrap().to_string();
+
+    // Create batch.
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/v1/batches")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "input_file_id": file_id,
+                "endpoint": "/v1/chat/completions"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let create_resp = vllm_hb::server::router(Arc::clone(&state))
+        .oneshot(create_req)
+        .await
+        .unwrap();
+    let batch = body_json(create_resp).await;
+    let batch_id = batch["id"].as_str().unwrap().to_string();
+
+    // Poll status.
+    let get_req = Request::builder()
+        .uri(format!("/v1/batches/{batch_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let get_resp = vllm_hb::server::router(Arc::clone(&state))
+        .oneshot(get_req)
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let status_body = body_json(get_resp).await;
+    assert_eq!(status_body["id"], batch_id);
+    assert!(
+        ["validating", "in_progress", "completed"]
+            .contains(&status_body["status"].as_str().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn get_batch_unknown_id_returns_404() {
+    let req = Request::builder()
+        .uri("/v1/batches/batch_doesnotexist")
+        .body(Body::empty())
+        .unwrap();
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_file_content_unknown_returns_404() {
+    let req = Request::builder()
+        .uri("/v1/files/file-doesnotexist/content")
+        .body(Body::empty())
+        .unwrap();
+    let resp = test_router().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn batch_request_counts_in_response() {
+    let state = test_state();
+
+    let jsonl = r#"{"custom_id":"r1","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages":[{"role":"user","content":"hi"}]}}"#;
+    let file = upload_jsonl(vllm_hb::server::router(Arc::clone(&state)), jsonl).await;
+    let file_id = file["id"].as_str().unwrap().to_string();
+
+    let create_req = Request::builder()
+        .method("POST")
+        .uri("/v1/batches")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({"input_file_id": file_id, "endpoint": "/v1/chat/completions"}).to_string(),
+        ))
+        .unwrap();
+    let resp = vllm_hb::server::router(Arc::clone(&state))
+        .oneshot(create_req)
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert!(body["request_counts"].is_object());
+}
+
+#[tokio::test]
+async fn cancel_batch_unknown_returns_404() {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/batches/batch_doesnotexist/cancel")
         .body(Body::empty())
         .unwrap();
     let resp = test_router().oneshot(req).await.unwrap();
