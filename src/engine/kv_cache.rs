@@ -19,6 +19,7 @@
 
 use candle_core::Tensor;
 use candle_transformers::models::llama as candle_llama;
+use candle_transformers::models::quantized_llama::ModelWeights as GgufModelWeights;
 
 /// KV state for one active sequence.
 ///
@@ -33,20 +34,25 @@ pub enum PerSeqCache {
     /// Tensor-parallel Llama — backend owns the cache internally.
     /// This variant is a marker so the worker can insert/remove it uniformly.
     LlamaTp,
+    /// GGUF-quantized Llama — a cheap clone of the template `ModelWeights`
+    /// (Arc-backed weights shared, KV cache private to this sequence).
+    /// The `ModelWeights` is mutated in-place during the forward pass.
+    GgufLlama(GgufModelWeights),
 }
 
 impl PerSeqCache {
     /// Attempt a cheap clone of the cache for external-cache architectures.
     ///
-    /// Returns `Some` only for `Mixtral`, where the underlying `Tensor`s are
-    /// Arc-backed and cloning costs O(num_layers) ref-count bumps.  Returns
-    /// `None` for `Llama` and `LlamaTp` — callers must use a fallback.
+    /// Returns `Some` only for `Mixtral` and `GgufLlama`, where the underlying
+    /// `Tensor`s are Arc-backed and cloning costs O(num_layers) ref-count bumps.
+    /// Returns `None` for `Llama` and `LlamaTp` — callers must use a fallback.
     ///
     /// Used by the speculative decoder to snapshot the draft cache before
     /// generating K candidate tokens so it can be restored on partial accept.
     pub fn try_clone_external(&self) -> Option<Self> {
         match self {
             Self::Mixtral(v) => Some(Self::Mixtral(v.clone())),
+            Self::GgufLlama(m) => Some(Self::GgufLlama(m.clone())),
             Self::Llama(_) | Self::LlamaTp => None,
         }
     }
