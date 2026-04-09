@@ -50,10 +50,13 @@ use tokio::sync::mpsc;
 
 use crate::engine::{Engine, PerSeqCache};
 use crate::sampling;
+use crate::sampling::logprobs::LogprobCollector;
+use crate::sampling::stop::StopChecker;
 use crate::scheduler::sequence::{Sequence, SequenceGroup, SequenceStatus};
 use crate::scheduler::{Scheduler, SchedulerOutputs};
 use crate::speculative::SpeculativeDecoder;
 use crate::tokenize;
+use crate::tools::parser::ToolCallParser;
 use crate::types::pipeline::{
     FinishReason, GenerationEvent, GenerationStats, TokenEvent, WorkItem,
 };
@@ -108,6 +111,18 @@ pub struct Worker {
     /// When present, `step_decode` uses speculative drafting instead of
     /// single-token greedy/sampled decoding.
     spec_decoder: Option<SpeculativeDecoder>,
+    /// Per-sequence stop-sequence checkers.  `None` when the request had no
+    /// stop strings; present and checked after every emitted token.
+    stop_checkers: HashMap<u64, StopChecker>,
+    /// Per-sequence log-probability collectors.  Present only when the request
+    /// set `logprobs: true`.
+    logprob_collectors: HashMap<u64, LogprobCollector>,
+    /// Per-sequence decode step counter used to advance the seed each step
+    /// so successive tokens within a seeded request are independently sampled.
+    seq_step: HashMap<u64, u64>,
+    /// Seq ids that had `tools` in their request — output is parsed for tool
+    /// calls on finish.
+    seq_has_tools: HashMap<u64, bool>,
 }
 
 impl Worker {
@@ -129,6 +144,10 @@ impl Worker {
                 seq_start: HashMap::new(),
                 next_seq_id: 0,
                 spec_decoder,
+                stop_checkers: HashMap::new(),
+                logprob_collectors: HashMap::new(),
+                seq_step: HashMap::new(),
+                seq_has_tools: HashMap::new(),
             },
             WorkerHandle { tx },
         )
@@ -193,6 +212,27 @@ impl Worker {
         self.next_seq_id += 1;
 
         self.seq_start.insert(id, Instant::now());
+
+        // Register a stop checker for this sequence if the request has stop strings.
+        if let Some(checker) = StopChecker::new(item.params.stop.clone()) {
+            self.stop_checkers.insert(id, checker);
+        }
+
+        // Register a logprob collector if the request wants logprobs.
+        if item.params.logprobs {
+            self.logprob_collectors
+                .insert(id, LogprobCollector::new(item.params.top_logprobs as usize));
+        }
+
+        // Track decode step count for seed advancement.
+        if item.params.seed.is_some() {
+            self.seq_step.insert(id, 0);
+        }
+
+        // Note whether this request had tools so we can parse output on finish.
+        if item.params.has_tools {
+            self.seq_has_tools.insert(id, true);
+        }
 
         let seq = Sequence::new(id, item.token_ids, item.params, item.result_tx);
         let group = SequenceGroup::new(item.id.clone(), vec![seq]);
@@ -275,7 +315,7 @@ impl Worker {
         let logits = self
             .engine
             .forward_with_cache(&seq.prompt_ids, 0, &mut cache)?;
-        let first_token = sampling::sample(&logits, seq.params.temperature, seq.params.top_p)?;
+        let first_token = self.sample_token(seq, &logits)?;
 
         seq.output_ids.push(first_token);
         self.emit_token(seq, first_token);
@@ -333,7 +373,7 @@ impl Worker {
         let logits = self
             .engine
             .forward_with_cache(&[last_token], seq_pos, cache)?;
-        let next_token = sampling::sample(&logits, seq.params.temperature, seq.params.top_p)?;
+        let next_token = self.sample_token(seq, &logits)?;
 
         seq.output_ids.push(next_token);
         self.emit_token(seq, next_token);
@@ -414,26 +454,44 @@ impl Worker {
         self.eos_tokens
             .contains(seq.output_ids.last().unwrap_or(&0))
             || seq.output_ids.len() >= seq.params.max_tokens
+            || self
+                .stop_checkers
+                .get(&seq.id)
+                .is_some_and(|c| c.matched().is_some())
     }
 
-    fn emit_token(&self, seq: &Sequence, token_id: u32) {
+    /// Decode `token_id` to text, push it to the stop checker (if any), and
+    /// send a `Token` event to the handler.  Returns the decoded text.
+    fn emit_token(&mut self, seq: &Sequence, token_id: u32) -> String {
         let text = tokenize::decode(&self.tokenizer, &[token_id]).unwrap_or_default();
-        let _ = seq
-            .result_tx
-            .send(GenerationEvent::Token(TokenEvent { id: token_id, text }));
+
+        if let Some(checker) = self.stop_checkers.get_mut(&seq.id) {
+            checker.push(&text);
+        }
+
+        let _ = seq.result_tx.send(GenerationEvent::Token(TokenEvent {
+            id: token_id,
+            text: text.clone(),
+        }));
+
+        text
     }
 
     fn finish_seq(&mut self, seq: &mut Sequence) {
+        let stop_matched = self
+            .stop_checkers
+            .remove(&seq.id)
+            .and_then(|c| c.matched().map(str::to_owned));
+
         let finish = if self
             .eos_tokens
             .contains(seq.output_ids.last().unwrap_or(&0))
+            || stop_matched.is_some()
         {
             FinishReason::Stop
         } else {
             FinishReason::Length
         };
-
-        seq.status = SequenceStatus::Finished(finish);
 
         let t_start = self.seq_start.remove(&seq.id).unwrap_or_else(Instant::now);
         let total_ms = t_start.elapsed().as_millis() as u64;
@@ -456,8 +514,29 @@ impl Worker {
             "Sequence complete"
         );
 
+        let logprobs = self.logprob_collectors.remove(&seq.id).map(|c| c.finish());
+        self.seq_step.remove(&seq.id);
+
+        // Parse tool calls from the assembled output when tools were requested.
+        let had_tools = self.seq_has_tools.remove(&seq.id).unwrap_or(false);
+        let tool_calls = if had_tools {
+            let full_text = tokenize::decode(&self.tokenizer, &seq.output_ids).unwrap_or_default();
+            ToolCallParser::parse(&full_text).tool_calls
+        } else {
+            Vec::new()
+        };
+
+        let final_finish = if !tool_calls.is_empty() {
+            // Override finish_reason to "tool_calls" when a call was detected.
+            FinishReason::ToolCalls
+        } else {
+            finish
+        };
+
+        seq.status = SequenceStatus::Finished(final_finish);
+
         let _ = seq.result_tx.send(GenerationEvent::Finished {
-            finish_reason: finish,
+            finish_reason: final_finish,
             stats: GenerationStats {
                 prompt_tokens: prompt_len,
                 completion_tokens: gen_count,
@@ -465,7 +544,60 @@ impl Worker {
                 total_ms,
                 tokens_per_sec,
             },
+            logprobs,
+            tool_calls,
         });
+    }
+
+    /// Sample the next token from `logits`, honouring any seed in `seq.params`
+    /// and recording logprobs when requested.
+    ///
+    /// The seed is advanced by `seq_step` on each call so successive tokens
+    /// within one seeded request are independently distributed.
+    fn sample_token(&mut self, seq: &Sequence, logits: &candle_core::Tensor) -> Result<u32> {
+        let temp = seq.params.temperature;
+        let top_p = seq.params.top_p;
+
+        // When logprobs are requested we need the full probability distribution.
+        let need_probs = self.logprob_collectors.contains_key(&seq.id);
+
+        let (token_id, probs_opt) = if need_probs {
+            let probs = sampling::logits_to_probs(logits, temp, top_p)?;
+            let token = if let Some(base_seed) = seq.params.seed {
+                let step = self.seq_step.get(&seq.id).copied().unwrap_or(0);
+                let token_seed = base_seed.wrapping_add(step.wrapping_mul(0x9e3779b97f4a7c15));
+                sampling::sample_seeded(logits, temp, top_p, token_seed)?
+            } else {
+                sampling::sample(logits, temp, top_p)?
+            };
+            (token, Some(probs))
+        } else if let Some(base_seed) = seq.params.seed {
+            let step = self.seq_step.get(&seq.id).copied().unwrap_or(0);
+            let token_seed = base_seed.wrapping_add(step.wrapping_mul(0x9e3779b97f4a7c15));
+            (
+                sampling::sample_seeded(logits, temp, top_p, token_seed)?,
+                None,
+            )
+        } else {
+            (sampling::sample(logits, temp, top_p)?, None)
+        };
+
+        // Advance step counter for seed mixing.
+        if let Some(step) = self.seq_step.get_mut(&seq.id) {
+            *step += 1;
+        }
+
+        // Record logprob entry.
+        if let (Some(probs), Some(collector)) =
+            (probs_opt, self.logprob_collectors.get_mut(&seq.id))
+        {
+            let tokenizer = &self.tokenizer;
+            collector.record(token_id, &probs, |id| {
+                tokenize::decode(tokenizer, &[id]).unwrap_or_default()
+            });
+        }
+
+        Ok(token_id)
     }
 
     fn fail_group(&self, group: &mut SequenceGroup, msg: String) {

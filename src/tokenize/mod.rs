@@ -74,3 +74,19 @@ pub fn apply_chat_template(model_path: &str, messages: &[ChatMessage]) -> Result
     tracing::debug!(dialect = ?dialect, "Chat template");
     Ok(template::render(dialect, messages))
 }
+
+/// Read the raw `chat_template` string from `tokenizer_config.json`.
+///
+/// Used by the tool formatter to detect which tool injection format the model
+/// expects.  Returns an empty string when the file is absent or malformed.
+pub fn load_chat_template(model_path: &str) -> Option<String> {
+    use std::path::Path;
+    #[derive(serde::Deserialize)]
+    struct Cfg {
+        chat_template: Option<String>,
+    }
+    let path = Path::new(model_path).join("tokenizer_config.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let cfg: Cfg = serde_json::from_str(&raw).ok()?;
+    cfg.chat_template
+}

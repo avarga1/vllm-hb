@@ -14,6 +14,19 @@ pub struct SamplingParams {
     pub max_tokens: usize,
     pub temperature: f32,
     pub top_p: f32,
+    /// Stop strings — generation halts when any is matched in the output.
+    pub stop: Vec<String>,
+    /// Optional RNG seed for reproducible sampling.  `None` uses the global
+    /// thread-local RNG.
+    pub seed: Option<u64>,
+    /// When `true`, per-token log-probabilities are collected and returned.
+    pub logprobs: bool,
+    /// Number of top-alternative log-probabilities per position.  Only
+    /// meaningful when `logprobs` is `true`.  Clamped to `[0, 20]`.
+    pub top_logprobs: u8,
+    /// `true` when the request included `tools` — the worker will run
+    /// `ToolCallParser` on the completed output.
+    pub has_tools: bool,
 }
 
 impl Default for SamplingParams {
@@ -22,6 +35,11 @@ impl Default for SamplingParams {
             max_tokens: 512,
             temperature: 0.7,
             top_p: 1.0,
+            stop: Vec::new(),
+            seed: None,
+            logprobs: false,
+            top_logprobs: 0,
+            has_tools: false,
         }
     }
 }
@@ -57,15 +75,26 @@ pub enum GenerationEvent {
     Finished {
         finish_reason: FinishReason,
         stats: GenerationStats,
+        /// Per-token log-probability data.  `None` when `logprobs` was not
+        /// requested.
+        logprobs: Option<Vec<crate::sampling::logprobs::LogprobContent>>,
+        /// Parsed tool calls extracted from the model output.  Non-empty when
+        /// the model emitted a function call (JSON-block or XML format).
+        tool_calls: Vec<crate::tools::parser::ParsedToolCall>,
     },
     Error(String),
 }
+
+/// Reason a sequence finished, extended for tool-call responses.
+#[allow(dead_code)]
+pub const FINISH_TOOL_CALLS: &str = "tool_calls";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
     Length,
+    ToolCalls,
 }
 
 impl FinishReason {
@@ -73,6 +102,7 @@ impl FinishReason {
         match self {
             Self::Stop => "stop",
             Self::Length => "length",
+            Self::ToolCalls => "tool_calls",
         }
     }
 }

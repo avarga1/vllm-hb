@@ -70,6 +70,8 @@ fn mock_worker() -> (WorkerHandle, tokio::task::JoinHandle<()>) {
                     total_ms: 20,
                     tokens_per_sec: 100.0,
                 },
+                logprobs: None,
+                tool_calls: Vec::new(),
             });
         }
     });

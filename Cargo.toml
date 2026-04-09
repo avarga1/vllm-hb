@@ -61,7 +61,7 @@ candle-flash-attn   = { version = "0.10", optional = true }
 cudarc              = { version = "0.17", optional = true }
 
 # Sampling
-rand          = "0.8"
+rand          = { version = "0.8", features = ["small_rng"] }
 
 # Observability
 tracing             = "0.1"

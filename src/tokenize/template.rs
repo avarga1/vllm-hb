@@ -121,6 +121,8 @@ mod tests {
         ChatMessage {
             role: role.to_string(),
             content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 

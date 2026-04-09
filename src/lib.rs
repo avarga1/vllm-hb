@@ -13,6 +13,7 @@ pub mod engine;
 pub mod sampling;
 pub mod server;
 pub mod tokenize;
+pub mod tools;
 pub mod types;
 pub mod worker;
 
