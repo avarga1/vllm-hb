@@ -1,15 +1,16 @@
 //! Qwen 2 / 2.5 architecture backend.
 //!
-//! Uses `candle_transformers::models::qwen2` — detected by `model_type == "qwen2"`.
+//! Uses our vendored `models::qwen2` with fused RMSNorm.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::qwen2;
 use parking_lot::Mutex;
 
+use super::models::qwen2;
+
 pub struct Qwen2Backend {
-    model: Mutex<qwen2::ModelForCausalLM>,
+    model:  Mutex<qwen2::ModelForCausalLM>,
     device: Device,
 }
 
@@ -32,10 +33,8 @@ impl Qwen2Backend {
 
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         let input = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
-        // logits: [1, seq_len, vocab_size]
+        // logits shape: [1, 1, vocab_size] (model already narrows to last token)
         let logits = self.model.lock().forward(&input, seq_pos)?;
-        // Take the last token's logits → [vocab_size] (rank 1).
-        // squeeze(0) alone gives [seq_len, vocab_size] which breaks sample_token.
         let seq_len = logits.dim(1)?;
         Ok(logits.squeeze(0)?.get(seq_len - 1)?)
     }
@@ -46,9 +45,6 @@ impl Qwen2Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        // Clear the model's internal KV cache so each new sequence starts
-        // fresh.  Without this, entries from the previous request bleed into
-        // the next prefill, causing an attention-mask shape mismatch.
         self.model.lock().clear_kv_cache();
         vec![]
     }

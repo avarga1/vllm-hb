@@ -8,6 +8,7 @@ pub mod gguf_llama;
 pub mod llama;
 pub mod llama_tp;
 pub mod mixtral;
+pub(crate) mod models;
 pub mod phi3;
 pub mod qwen2;
 pub mod qwen3;
