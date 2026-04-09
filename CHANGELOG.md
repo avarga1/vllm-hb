@@ -11,6 +11,28 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.11.0] — 2026-04-09
+
+### Added
+- **GGUF quantization support** (`src/engine/arch/gguf_llama.rs`, issue #28)
+  - `GgufLlamaBackend` — wraps `candle_transformers::models::quantized_llama::ModelWeights`
+  - Accepts any GGUF quantization format: Q2_K, Q3_K_*, Q4_0, Q4_K_*, Q5_K_*, Q6_K, Q8_0, F16, F32
+  - Template + clone memory model: one `Arc<ModelWeights>` loaded at startup; each sequence receives a cheap clone (O(n_layers) Arc ref-count bumps, zero weight data copied); KV state grows independently per clone
+  - `GgufLlamaBackend::load(path, device)` — reads GGUF header, extracts `llama.vocab_size`, `llama.embedding_length`, `llama.block_count` metadata, builds `ModelWeights` via `candle_core::quantized::gguf_file`
+  - `GgufLlamaBackend::create_seq_model()` — O(n_layers) clone of the template for one sequence
+  - `GgufLlamaBackend::forward(model, token_ids, seq_pos, device)` — single forward step updating the sequence's private KV cache
+  - `PerSeqCache::GgufLlama(ModelWeights)` variant added; `try_clone_external()` handles it (ModelWeights is Clone)
+  - `Backend::GgufLlama` variant and all dispatch arms added in `src/engine/arch/mod.rs`
+  - `Engine::load_gguf()` — detects `.gguf` extension, bypasses safetensors/config.json path, returns `Engine` with populated metadata
+  - Auto-detection in `Engine::load()`: GGUF files are identified by `.gguf` extension before any other loading logic
+
+### Changed
+- `Engine::load()` now detects `.gguf` files by extension and dispatches to `load_gguf()` automatically — no API change required
+- `embed_tokens` is `None` for GGUF models (quantized embedding matrix is internal to `ModelWeights`; static mean-pool embeddings are not exposed)
+- Version bumped 0.10.0 → 0.11.0
+
+---
+
 ## [0.10.0] — 2026-04-09
 
 ### Added
