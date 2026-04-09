@@ -32,8 +32,12 @@ impl Qwen2Backend {
 
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         let input = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
+        // logits: [1, seq_len, vocab_size]
         let logits = self.model.lock().forward(&input, seq_pos)?;
-        Ok(logits.squeeze(0)?)
+        // Take the last token's logits → [vocab_size] (rank 1).
+        // squeeze(0) alone gives [seq_len, vocab_size] which breaks sample_token.
+        let seq_len = logits.dim(1)?;
+        Ok(logits.squeeze(0)?.get(seq_len - 1)?)
     }
 
     pub fn reset_cache(&self) -> Result<()> {
@@ -42,7 +46,11 @@ impl Qwen2Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        vec![] // internal cache — forward_with_cache delegates to forward()
+        // Clear the model's internal KV cache so each new sequence starts
+        // fresh.  Without this, entries from the previous request bleed into
+        // the next prefill, causing an attention-mask shape mismatch.
+        self.model.lock().clear_kv_cache();
+        vec![]
     }
 
     pub fn forward_with_cache(

@@ -36,7 +36,8 @@ impl Qwen3Backend {
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         let input = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
         let logits = self.model.lock().forward(&input, seq_pos)?;
-        Ok(logits.squeeze(0)?)
+        let seq_len = logits.dim(1)?;
+        Ok(logits.squeeze(0)?.get(seq_len - 1)?)
     }
 
     pub fn reset_cache(&self) -> Result<()> {
@@ -45,7 +46,8 @@ impl Qwen3Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        vec![] // internal cache — forward_with_cache delegates to forward()
+        self.model.lock().clear_kv_cache();
+        vec![]
     }
 
     pub fn forward_with_cache(
