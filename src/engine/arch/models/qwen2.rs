@@ -1,6 +1,18 @@
-//! Qwen2 model — vendored from candle-transformers 0.10.2 with fused RMSNorm.
+//! Qwen2 model — vendored from candle-transformers 0.10.2 with fused RMSNorm
+//! and pre-allocated KV cache for constant-shape decode (Exp 6B Phase 1).
 //!
-//! Only change: `with_tracing::RmsNorm` → `super::RmsNorm` (calls our CUDA kernel).
+//! Changes from upstream:
+//!   1. `with_tracing::RmsNorm` → `super::RmsNorm` (calls our CUDA kernel)
+//!   2. Attention struct carries pre-allocated k_buf/v_buf tensors.
+//!      During decode (q_len == 1) on CUDA, slot-assign replaces Tensor::cat,
+//!      keeping buffer shape constant across all decode steps.
+//!      This is the prerequisite for CUDA graph capture (Phase 2).
+
+/// Maximum sequence length backed by the pre-allocated KV buffer.
+/// Sequences longer than this fall back to the original cat-based path.
+/// Size per layer: nkv × MAX_KV_BUF × head_dim × dtype_bytes
+/// For Qwen2.5-7B (nkv=8, hd=128, f16): 8 × 2048 × 128 × 2 = 4 MB/layer.
+const MAX_KV_BUF: usize = 2048;
 
 use super::RmsNorm;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
@@ -115,14 +127,25 @@ struct Attention {
     hidden_size:   usize,
     rotary_emb:    Arc<RotaryEmbedding>,
     kv_cache:      Option<(Tensor, Tensor)>,
+    // Pre-allocated decode buffers (Exp 6B Phase 1).
+    // Fixed shape [1, nkv, MAX_KV_BUF, head_dim] — never grows.
+    k_buf:             Tensor,
+    v_buf:             Tensor,
+    k_buf_initialized: bool, // true once prefill cache has been copied into k_buf
 }
 
 impl Attention {
     fn new(rotary_emb: Arc<RotaryEmbedding>, cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let h  = cfg.hidden_size;
-        let nh = cfg.num_attention_heads;
+        let h   = cfg.hidden_size;
+        let nh  = cfg.num_attention_heads;
         let nkv = cfg.num_key_value_heads;
-        let hd = h / nh;
+        let hd  = h / nh;
+        let dev   = vb.device();
+        let dtype = vb.dtype();
+        // Pre-allocate fixed-shape KV buffers for decode.  Shape is constant regardless
+        // of sequence position, which allows CUDA graph capture in Phase 2.
+        let k_buf = Tensor::zeros((1, nkv, MAX_KV_BUF, hd), dtype, dev)?;
+        let v_buf = Tensor::zeros((1, nkv, MAX_KV_BUF, hd), dtype, dev)?;
         Ok(Self {
             q_proj: linear(h, nh * hd, vb.pp("q_proj"))?,
             k_proj: linear(h, nkv * hd, vb.pp("k_proj"))?,
@@ -135,6 +158,9 @@ impl Attention {
             hidden_size:   h,
             rotary_emb,
             kv_cache: None,
+            k_buf,
+            v_buf,
+            k_buf_initialized: false,
         })
     }
 
@@ -156,6 +182,70 @@ impl Attention {
         let (query_states, key_states) =
             self.rotary_emb.apply_rotary_emb_qkv(&query_states, &key_states, seqlen_offset)?;
 
+        // ── Decode fast-path: pre-alloc slot-assign (Exp 6B Phase 1) ─────────
+        // Conditions: decode step (q_len == 1), on CUDA, within buffer bounds.
+        let use_preallloc = false && q_len == 1 // disabled: enable only with CUDA graph capture (Phase 2)
+            && seqlen_offset + 1 <= MAX_KV_BUF
+            && matches!(xs.device(), Device::Cuda(_));
+
+        if use_preallloc {
+            // One-time init: copy prefill keys into the pre-alloc buffer.
+            // This allocates once per sequence (not per decode step).
+            if !self.k_buf_initialized {
+                if let Some((pk, pv)) = &self.kv_cache {
+                    let prefill_len = pk.dim(2)?;
+                    if prefill_len <= MAX_KV_BUF {
+                        let rest = MAX_KV_BUF - prefill_len;
+                        let zk = Tensor::zeros(
+                            (1, self.num_kv_heads, rest, self.head_dim),
+                            pk.dtype(), pk.device())?;
+                        let zv = Tensor::zeros(
+                            (1, self.num_kv_heads, rest, self.head_dim),
+                            pv.dtype(), pv.device())?;
+                        self.k_buf = Tensor::cat(&[pk, &zk], 2)?;
+                        self.v_buf = Tensor::cat(&[pv, &zv], 2)?;
+                    }
+                    // If prefill > MAX_KV_BUF the buffer stays zeroed but we still
+                    // set initialized=true; the bounds check above will route through
+                    // the cat fallback for the rest of the sequence.
+                }
+                self.k_buf_initialized = true;
+            }
+
+            // Slot-assign: constant-shape output every step.
+            self.k_buf = crate::kernels::kv_assign::assign_slot(
+                &self.k_buf, &key_states, seqlen_offset)
+                .map_err(candle_core::Error::wrap)?;
+            self.v_buf = crate::kernels::kv_assign::assign_slot(
+                &self.v_buf, &value_states, seqlen_offset)
+                .map_err(candle_core::Error::wrap)?;
+
+            let kv_len = seqlen_offset + 1;
+            let k_cache = self.k_buf.narrow(2, 0, kv_len)?;
+            let v_cache = self.v_buf.narrow(2, 0, kv_len)?;
+
+            let k_cache = repeat_kv(k_cache, self.num_kv_groups)?.contiguous()?;
+            let v_cache = repeat_kv(v_cache, self.num_kv_groups)?.contiguous()?;
+
+            let orig_dtype   = query_states.dtype();
+            let q_f32        = query_states.to_dtype(DType::F32)?;
+            let k_f32        = k_cache.to_dtype(DType::F32)?;
+            let v_f32        = v_cache.to_dtype(DType::F32)?;
+            let scale        = 1f64 / f64::sqrt(self.head_dim as f64);
+            let attn_weights = (q_f32.matmul(&k_f32.transpose(2, 3)?)? * scale)?;
+            let attn_weights = match attention_mask {
+                None       => attn_weights,
+                Some(mask) => attn_weights.broadcast_add(&mask.to_dtype(DType::F32)?)?,
+            };
+            return candle_nn::ops::softmax_last_dim(&attn_weights)?
+                .matmul(&v_f32)?
+                .to_dtype(orig_dtype)?
+                .transpose(1, 2)?
+                .reshape((b_sz, q_len, self.hidden_size))?
+                .apply(&self.o_proj);
+        }
+
+        // ── Original cat-based path (prefill or CPU or sequence > MAX_KV_BUF) ─
         let (key_states, value_states) = match &self.kv_cache {
             None => (key_states, value_states),
             Some((pk, pv)) => (
@@ -168,20 +258,35 @@ impl Attention {
         let key_states   = repeat_kv(key_states,   self.num_kv_groups)?.contiguous()?;
         let value_states = repeat_kv(value_states, self.num_kv_groups)?.contiguous()?;
 
+        // Compute attention in F32 for numerical stability.
+        // In F16, Q@K^T can overflow (e.g. Qwen2.5 k_proj biases up to ~414 cause
+        // dot-products > 65504 → +Inf stored to F16 → NaN in softmax).
+        // Casting Q, K, V to F32 before the matmul avoids this at minimal overhead.
+        let orig_dtype   = query_states.dtype();
+        let q_f32        = query_states.to_dtype(DType::F32)?;
+        let k_f32        = key_states.to_dtype(DType::F32)?;
+        let v_f32        = value_states.to_dtype(DType::F32)?;
+
         let scale        = 1f64 / f64::sqrt(self.head_dim as f64);
-        let attn_weights = (query_states.matmul(&key_states.transpose(2, 3)?)? * scale)?;
+        let attn_weights = (q_f32.matmul(&k_f32.transpose(2, 3)?)? * scale)?;
         let attn_weights = match attention_mask {
             None       => attn_weights,
-            Some(mask) => attn_weights.broadcast_add(mask)?,
+            Some(mask) => attn_weights.broadcast_add(&mask.to_dtype(DType::F32)?)?,
         };
         candle_nn::ops::softmax_last_dim(&attn_weights)?
-            .matmul(&value_states)?
+            .matmul(&v_f32)?
+            .to_dtype(orig_dtype)?
             .transpose(1, 2)?
             .reshape((b_sz, q_len, self.hidden_size))?
             .apply(&self.o_proj)
     }
 
-    fn clear_kv_cache(&mut self) { self.kv_cache = None; }
+    fn clear_kv_cache(&mut self) {
+        self.kv_cache = None;
+        self.k_buf_initialized = false;
+        // k_buf/v_buf content doesn't need zeroing — k_buf_initialized=false
+        // ensures they're re-populated on the next sequence's first decode step.
+    }
 }
 
 // ── Decoder Layer ─────────────────────────────────────────────────────────────
@@ -217,8 +322,9 @@ impl DecoderLayer {
         let xs = self.self_attn.forward(&xs, attention_mask, seqlen_offset)?;
         let xs = (xs + residual)?;
         let residual = &xs;
-        let xs = xs.apply(&self.post_attention_layernorm)?.apply(&self.mlp)?;
-        residual + xs
+        let post_ln = xs.apply(&self.post_attention_layernorm)?;
+        let mlp_out = self.mlp.forward(&post_ln)?;
+        residual + mlp_out
     }
 
     fn clear_kv_cache(&mut self) { self.self_attn.clear_kv_cache(); }

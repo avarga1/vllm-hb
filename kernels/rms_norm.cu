@@ -25,21 +25,34 @@ __device__ __forceinline__ float warp_reduce_sum(float val) {
 }
 
 // ── Block reduce sum (across all warps in shared memory) ─────────────────────
+//
+// Returns the correct total to ALL threads in the block.
+//
+// Bug note: the naive pattern (warp-reduce → smem → final warp-reduce) only
+// gives thread 0 the correct total; threads 32–(BLOCK-1) get 0 because they
+// read smem[threadIdx.x >= BLOCK/32] which is always 0.  The fix is to write
+// the final result back to smem[0] and broadcast it via a second __syncthreads.
 
 template <int BLOCK>
 __device__ float block_reduce_sum(float val, float* smem) {
     const int lane = threadIdx.x & 31;
     const int wid  = threadIdx.x >> 5;
 
+    // Step 1: reduce within each warp; lane 0 has the warp total.
     val = warp_reduce_sum(val);
 
+    // Step 2: collect warp totals in shared memory.
     if (lane == 0) smem[wid] = val;
     __syncthreads();
 
+    // Step 3: first warp reduces all warp totals → thread 0 has the block total.
     val = (threadIdx.x < (BLOCK / 32)) ? smem[lane] : 0.f;
     val = warp_reduce_sum(val);
 
-    return val;
+    // Step 4: broadcast the block total to ALL threads via smem[0].
+    if (threadIdx.x == 0) smem[0] = val;
+    __syncthreads();
+    return smem[0];
 }
 
 // ── Device-side implementation (called from __global__ wrappers) ──────────────

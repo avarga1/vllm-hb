@@ -291,7 +291,7 @@ Adding `.contiguous()` before the matmul would fix the error but would materiali
 ## Experiment 6B — Pre-allocated KV Cache → CUDA Graph Capture
 
 **Date**: 2026-04-10
-**Status**: Planned
+**Status**: Phase 1 complete (see results below); Phase 2 (CUDA graph) pending
 **Hypothesis**: Pre-allocating the KV cache to `max_seq_len` at model load time makes decode step tensor shapes static, enabling CUDA graph capture. Graph replay would replace ~477 individual `cuLaunchKernel` calls with 1, closing the remaining ~10% gap vs vLLM and pushing us above 43 tok/s for the first time.
 
 ### Background
@@ -376,6 +376,70 @@ Current:   39 tok/s  (61% of ceiling)
 ```
 
 Phase 2 requires implementing the custom in-place CUDA write kernel. The graph capture API is ready.
+
+### Exp 6B Phase 1 Results — 2026-04-10
+
+**Status**: Complete (partial win — correctness fixed, throughput unchanged).
+
+#### Root Cause: F16 Q@K^T Overflow → NaN Logits
+
+All previous benchmarks (including the "39 tok/s" baseline) were generating garbage tokens. The model produced "!!!!" (token 0) for every decode step, but throughput appeared normal because the computation ran without crashing.
+
+**Root cause chain**:
+1. `model.layers.27.self_attn.k_proj.bias` has max absolute value = **414.0** (in BF16 storage)
+2. `model.layers.27.self_attn.q_proj.bias` has max absolute value = **46.75**
+3. When loaded as F16, the weights themselves are fine (max 171.0 fits within F16 range)
+4. But Q@K^T for layer 27 can sum ~4+ dimensions where q[i]≈46.75 and k[i]≈414, giving ~77K per element → **exceeds F16 max (65504)** → stored as `+Inf`
+5. `+Inf` in attention weights → `Inf/Inf = NaN` in softmax → NaN logits → argmax returns 0 → "!!!!"
+
+vLLM avoids this because Flash Attention v2 accumulates Q@K^T in **F32 internally**, even for F16 tensors. The result is written to F16 only after scaling (which brings it below 65504 for typical attention weights).
+
+**Fix**: Cast Q, K, V to F32 before the matmul; apply softmax in F32; cast attention output back to F16. This is what FA2 does in its inner loop.
+
+```rust
+let orig_dtype = query_states.dtype();
+let q_f32 = query_states.to_dtype(DType::F32)?;
+let k_f32 = key_states.to_dtype(DType::F32)?;
+let v_f32 = value_states.to_dtype(DType::F32)?;
+let attn_weights = (q_f32.matmul(&k_f32.transpose(2, 3)?)? * scale)?;
+// mask, softmax, v matmul in F32 ...
+.to_dtype(orig_dtype)?
+```
+
+#### rms_norm Broadcast Bug (Also Fixed)
+
+A secondary bug in `kernels/rms_norm.cu`: `block_reduce_sum<512>` only propagated the block total to thread 0 after the final warp reduction. Threads 32–511 got `ss = 0`, making `rms_scale = 1/sqrt(eps) ≈ 1000` for 94% of output elements. This was causing 94% of normalized values to be ~1000× too large. Fix: write `smem[0] = val; __syncthreads(); return smem[0];` to broadcast the block total.
+
+#### Phase 1 Prealloc: Slower Without CUDA Graphs
+
+The kv_assign CustomOp2 kernel works correctly but must clone the full 2048-slot buffer on every call (candle's `CustomOp2` cannot do true in-place writes). This makes prealloc **worse** than cat for sequences shorter than MAX_KV_BUF:
+
+- cat-based: copies `O(seq_len)` data per step (growing)
+- prealloc DtoD: copies `O(MAX_KV_BUF)` = 2048 slots **constant, always larger**
+
+Prealloc is disabled (`false &&` guard) until Phase 2 (CUDA graph capture), which is the real payoff.
+
+#### Benchmark Results
+
+```
+Model: Qwen2.5-7B-Instruct, V100-SXM2-32GB, F16, batch=1, 200 tok/req
+
+vllm-hb (this PR, F32 attention, cat KV):  38.4 tok/s  ✓ correct output
+vllm-hb (prealloc enabled, no graph):      34.9 tok/s  ✓ correct output
+Python vLLM 0.4.x (FA2, PagedAttn):       43.4 tok/s  ✓ correct output
+```
+
+Gap to vLLM: **5.0 tok/s** (11.5%). Previously, all numbers were fiction (NaN logits).
+
+#### Revised Roadmap
+
+```
+Current (corrected):          38.4 tok/s  (60% of 64 tok/s ceiling)
++ Phase 2 (CUDA graph):      ~44 tok/s   (69%)  ← beat vLLM
+  prerequisite: true in-place KV write (bypass candle Tensor immutability)
+  approach: store k_buf/v_buf as Arc<Mutex<CudaSlice<f16>>> outside candle Tensor;
+            write with raw cudarc kernel launch; create read-only Tensor view for attention
+```
 
 ---
 

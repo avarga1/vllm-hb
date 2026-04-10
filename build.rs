@@ -4,6 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=kernels/rms_norm.cu");
     println!("cargo:rerun-if-changed=kernels/rope.cu");
+    println!("cargo:rerun-if-changed=kernels/kv_assign.cu");
 
     // Only compile custom CUDA kernels when the `cuda` feature is active.
     if env::var("CARGO_FEATURE_CUDA").is_err() {
@@ -47,6 +48,14 @@ fn main() {
         .status()
         .expect("nvcc not found — set CUDA_HOME");
     assert!(status.success(), "nvcc failed compiling rope.cu");
+
+    // ── kv_assign ────────────────────────────────────────────────────────────
+    let kv_ptx = out_dir.join("kv_assign.ptx");
+    let status = std::process::Command::new(&nvcc)
+        .args(nvcc_ptx_args("kv_assign.cu", &kv_ptx))
+        .status()
+        .expect("nvcc not found — set CUDA_HOME");
+    assert!(status.success(), "nvcc failed compiling kv_assign.cu");
 
     // Expose OUT_DIR path so the Rust code can include_str! the .ptx files.
     println!("cargo:rustc-env=KERNEL_OUT_DIR={}", out_dir.display());

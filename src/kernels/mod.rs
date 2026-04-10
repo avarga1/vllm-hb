@@ -12,9 +12,20 @@
 pub mod rms_norm;
 #[cfg(feature = "cuda")]
 pub mod rope;
+#[cfg(feature = "cuda")]
+pub mod kv_assign;
 
 // CPU-only fallbacks — used when the `cuda` feature is disabled.
 // These replicate the candle eager computation so non-GPU builds still work.
+#[cfg(not(feature = "cuda"))]
+pub mod kv_assign {
+    use anyhow::Result;
+    use candle_core::Tensor;
+    pub fn assign_slot(_buf: &Tensor, _src: &Tensor, _offset: usize) -> Result<Tensor> {
+        anyhow::bail!("kv_assign::assign_slot: `cuda` feature not enabled")
+    }
+}
+
 #[cfg(not(feature = "cuda"))]
 pub mod rms_norm {
     use anyhow::Result;
