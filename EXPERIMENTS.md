@@ -123,15 +123,84 @@ We are now at **61% of the V100 memory bandwidth ceiling**. vLLM is at **67%**.
 
 ---
 
+---
+
+## Experiment 3 — Flash Attention 2
+
+**Date**: 2026-04-10
+**Branch**: `feat/fused-kernels`
+**Hypothesis**: Building with `--features flash-attn` would replace our SDPA attention with a 2-3x memory-bandwidth-efficient fused attention kernel, yielding +2-4 tok/s on long sequences.
+
+### Result: **Blocked — hardware**
+
+```
+Server GPU: Tesla V100-SXM2-32GB
+Compute capability: sm_70 (Volta)
+Flash Attention 2 requirement: sm_80+ (Ampere)
+```
+
+This experiment cannot run on this hardware. Need an A100, A40, RTX 3090, or H100 to test it.
+
+### What We Learned
+
+The gap between us and vLLM on long sequences (11.6% at 512 tokens vs 9.3% at 128 tokens) is likely partly explained by FA2 — vLLM uses it on sm_80+ hardware. On V100 specifically, vLLM also falls back to SDPA, so this experiment would be most meaningful on Ampere hardware where both can use their respective fused attention.
+
+---
+
+## Experiment 4 — RoPE Kernel: Already Fused
+
+**Date**: 2026-04-10
+**Hypothesis**: Our `rope_single_f32/f16` CUDA kernel would save kernel launches over candle's `rotary_emb::rope` implementation.
+
+### Result: **No savings — candle already fuses RoPE**
+
+Reading `candle-nn-0.10.2/src/rotary_emb.rs` line 133:
+```rust
+let func = dev.get_or_load_func(&kernel_name::<T>("rope_i"), &kernels::REDUCE)?;
+let dst = unsafe { dev.alloc::<T>(el)? };
+// ... single kernel launch
+```
+
+`candle_nn::rotary_emb::rope` is already a single fused CUDA kernel (`rope_i`). One launch per Q, one per K — same as our wrapper would do. **No launch count improvement possible here.**
+
+### What We Learned
+
+Not every candle operation is multi-op. The operators that were multi-op were the ones with no kernel in `kernels::REDUCE` (like RMSNorm). Before assuming a win, check whether candle already has a fused path by reading the CUDA branch of the relevant source.
+
+Our `rope.cu` / `rope.rs` are correct implementations but redundant versus what candle provides. They can be removed or kept for future architectural use (e.g., a true Q+K fused single-dispatch variant if we ever want to combine them).
+
+---
+
+## Experiment 5 — Kernel Launch Profiling with nsys
+
+**Date**: 2026-04-10
+**Status**: In progress
+**Hypothesis**: We estimate ~100 kernel launches remain per decode step after RMSNorm fusion. Profiling will tell us exactly what they are and where the next target is.
+
+### Methodology
+
+```bash
+nsys profile --trace=cuda --output=/tmp/decode_profile \
+  ./vllm-hb serve --model ... &
+# send one warmup + one timed decode request
+# nsys stats to count kernel launches by name
+```
+
+### Results
+
+_To be filled._
+
+---
+
 ## Open Questions
 
-- **Flash Attention 2**: Already have `--features flash-attn` wired. Would help attention bandwidth on long sequences. Likely +2-4 tok/s on 512-token runs. Easy experiment — one build flag.
+- **Kernel count after RMSNorm fusion**: We estimate ~100 launches/decode. Need nsys to confirm and identify the breakdown (attention matmuls, softmax, residual adds, etc.).
 
-- **Pre-allocated KV cache → CUDA graphs**: If we allocate KV cache to `max_seq_len` at load time (instead of growing it), the decode step tensor shapes become static and we can capture a CUDA graph. This is the path to closing the remaining ~10% gap without full PagedAttention.
+- **Pre-allocated KV cache → CUDA graphs**: If we allocate KV cache to `max_seq_len` at load time (instead of growing it), the decode step tensor shapes become static and we can capture a CUDA graph. This is the path to closing the remaining ~10% gap.
 
 - **Concurrent throughput**: The 2× degradation under concurrent load is a real production problem. True continuous batching (merging in-flight requests into the same GPU dispatch) is a larger architectural change.
 
-- **Vendor-free approach via `apply_op1_no_bwd` + patch**: Could we patch candle's own RMSNorm to use the fused path for `remove_mean=false` without vendoring model files? Would let Qwen2/Qwen3 pick up the win without maintaining copies.
+- **FA2 on sm_80+ hardware**: Valid experiment, just needs a different box.
 
 ---
 
@@ -139,10 +208,12 @@ We are now at **61% of the V100 memory bandwidth ceiling**. vLLM is at **67%**.
 
 ```
 Current:   39 tok/s  (61% of ceiling)
-+ FA2:    ~42 tok/s  (66%)     ← one build flag, try this next
-+ Graphs: ~44 tok/s  (69%)     ← needs pre-alloc KV cache
++ Graphs: ~44 tok/s  (69%)     ← needs pre-alloc KV cache, biggest tractable win
++ FA2:    ~46 tok/s  (72%)     ← needs sm_80+ hardware
 + Batch:  ~60+ tok/s           ← continuous batching, larger work
 Ceiling:   64 tok/s  (100%)
 ```
 
-vLLM today sits at 43 tok/s. Getting to 44+ with graphs would be the first time we beat them at single-request throughput on identical hardware.
+vLLM today sits at 43 tok/s on this V100. Getting to 44+ with CUDA graphs would be the first time we beat them at single-request throughput on identical hardware.
+
+Flash Attention 2 is the experiment we can't run yet — it needs the right GPU. CUDA graphs are the experiment we *can* run — and they represent the larger remaining win.
