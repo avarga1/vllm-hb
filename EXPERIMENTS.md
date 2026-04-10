@@ -306,20 +306,76 @@ Some((pk, pv)) => (
 
 `Tensor::cat` changes the tensor shape each decode step (grows by 1 along dim 2). CUDA graph capture requires identical shapes on replay — a dynamic shape causes graph invalidation.
 
-### Plan
+### Architecture Analysis
 
-1. Change KV cache storage to pre-allocated fixed-shape tensors: `[batch, num_kv_heads, max_seq_len, head_dim]`
-2. Track `seqlen_offset` as write cursor; each decode step writes to `kv_cache[:, :, seqlen_offset, :]`
-3. Read back `kv_cache[:, :, :seqlen_offset+1, :]` for attention (still a slice — need to verify shape consistency for graph capture or use mask instead)
-4. Capture CUDA graph for the decode forward pass using cudarc's stream capture API
-5. Replay graph on each subsequent decode step
+Reading `src/engine/arch/qwen2.rs`:
+```rust
+pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
+    self.model.lock().clear_kv_cache();
+    vec![]
+}
+pub fn forward_with_cache(&self, token_ids, seq_pos, _cache: &mut [Option<(Tensor, Tensor)>]) {
+    self.forward(token_ids, seq_pos)  // _cache is ignored!
+}
+```
+
+**The Qwen2 backend ignores the external cache entirely.** The KV cache is internal to `Attention.kv_cache` — a `Option<(Tensor, Tensor)>` that grows via `Tensor::cat` on each decode step. This limits Qwen2 to one concurrent sequence at a time.
+
+### Design for Pre-allocated KV Cache
+
+The full implementation requires two phases:
+
+**Phase 1 — Pre-alloc KV, eliminate `Tensor::cat`:**
+1. Replace `kv_cache: Option<(Tensor, Tensor)>` with `kv_buf: Tensor` of shape `[1, nkv, max_seq_len, hd]` pre-allocated at model init time
+2. Each decode step: write current K/V to position `seqlen_offset` via in-place CUDA scatter operation
+3. Attend over the full buffer `[:, :, :seqlen_offset+1, :]` (slice) — still dynamic shape, but cat is gone
+4. **Savings**: eliminates 2 × `Tensor::cat` per layer × 28 = 56 kernel launches
+
+**Phase 2 — Fixed buffer + CUDA graph:**
+5. Instead of slicing, attend over the FULL `[:, :, max_seq_len, :]` buffer with a causal mask that zeros out future positions
+6. Tensor shapes are now constant across decode steps → CUDA graph capture is possible
+7. Capture via `candle_device.cuda_stream().begin_capture()` / `end_capture()` (cudarc 0.19.4 API available)
+8. Replay on each decode step with `CudaGraph::launch()`
+9. **Savings**: replaces ~477 `cuLaunchKernel` calls with 1 graph replay
+
+### Key Constraint: candle Tensor Immutability
+
+candle has no `slice_assign` or in-place write. Writing K/V to a pre-allocated position requires either:
+- A custom CUDA kernel that takes the pre-allocated buffer + new K/V + position → writes in-place
+- Using raw `cudarc::CudaSlice::device_ptr_mut()` to copy into the buffer slice
+
+This is a real implementation blocker. Step 6 (full-buffer attention with mask) is straightforward once step 5 (pre-alloc write) is solved. The attention mask for the full-buffer case:
+```
+positions 0..seqlen_offset+1: causal (0 or -inf for future)  
+positions seqlen_offset+1..max_seq_len: -inf (masked out)
+```
+This adds no GPU work — the softmax over zeros still produces valid probabilities.
+
+### cudarc CUDA Graph API (available in cudarc 0.19.4)
+
+```rust
+// begin_capture / end_capture / launch confirmed in:
+// ~/.cargo/registry/src/.../cudarc-0.19.4/src/driver/safe/graph.rs
+let stream = device.cuda_stream();
+stream.begin_capture(CUstreamCaptureMode::Relaxed)?;
+// ... run one full decode forward pass ...
+let graph = stream.end_capture(CUgraphInstantiate_flags::empty())?.unwrap();
+graph.upload()?; // pre-warm
+// then on each subsequent step:
+graph.launch()?;
+```
+
+All candle ops dispatch on `device.cuda_stream()` — so capture works naturally once shapes are static.
 
 ### Expected Result
 
 ```
 Current:   39 tok/s  (61% of ceiling)
-Target:   ~44 tok/s  (69%)       ← first time beating vLLM at 43 tok/s
++ Phase 1 (no cat): ~40.5 tok/s (+1.5)  ← 56 fewer launches
++ Phase 2 (graph):  ~44 tok/s   (69%)   ← first time beating vLLM at 43 tok/s
 ```
+
+Phase 2 requires implementing the custom in-place CUDA write kernel. The graph capture API is ready.
 
 ---
 
