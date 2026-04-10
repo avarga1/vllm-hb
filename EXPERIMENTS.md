@@ -171,34 +171,125 @@ Our `rope.cu` / `rope.rs` are correct implementations but redundant versus what 
 
 ---
 
-## Experiment 5 — Kernel Launch Profiling with nsys
+## Experiment 5 — Kernel Launch Profiling
 
 **Date**: 2026-04-10
-**Status**: In progress
-**Hypothesis**: We estimate ~100 kernel launches remain per decode step after RMSNorm fusion. Profiling will tell us exactly what they are and where the next target is.
+**Status**: Completed (analytical — profiler blocked)
+**Hypothesis**: We estimate ~100 kernel launches remain per decode step after RMSNorm fusion.
 
-### Methodology
+### What Happened with nsys / nvprof
 
-```bash
-nsys profile --trace=cuda --output=/tmp/decode_profile \
-  ./vllm-hb serve --model ... &
-# send one warmup + one timed decode request
-# nsys stats to count kernel launches by name
+We attempted both tools. Neither worked:
+
+- **nvprof**: Reports "No kernels were profiled." cudarc uses the CUDA **driver API** (`cuLaunchKernel`), not the CUDA **runtime API** (`cudaLaunchKernel`). nvprof intercepts at the runtime level. Driver-API-only processes are invisible to it.
+
+- **nsys**: CUPTI injection (which nsys uses) interferes with cudarc's driver API dispatch. When nsys attaches, curl requests to the vllm-hb server return empty 200 responses — inference stalls. The nsys profile captures only model-weight casting kernels (339× `cast_bf16_f16`) with zero decode-step compute kernels. The V100 CUPTI implementation appears incompatible with cudarc's pattern of driver API calls.
+
+**Root cause**: cudarc bypasses libcudart.so — it links against `libcuda.so` (driver API) directly. Standard CUPTI hooks that nsys injects into the runtime are never called.
+
+### Analytical Kernel Count
+
+Since profilers can't capture the decode step, we counted by reading the forward pass code (`src/engine/arch/models/qwen2.rs`).
+
+**Per decoder layer** (single-token decode, no mask, GQA 4→28 heads):
+
+| Op | Kernel count | Note |
+|----|-------------|------|
+| input_layernorm (fused RMSNorm) | 1 | our custom kernel |
+| q_proj, k_proj, v_proj | 3 | cublas sgemv (batch=1 vector-matrix) |
+| RoPE Q, RoPE K | 2 | candle `rope_i` (already fused) |
+| KV cache cat (key + value) | 2 | candle elementwise copy |
+| repeat_kv + contiguous ×2 | 4 | expand non-contiguous → force copy ×2 |
+| QK matmul | 1 | cublas |
+| scale multiply | 1 | elementwise |
+| softmax | 1 | candle fused softmax |
+| attn × V matmul | 1 | cublas |
+| o_proj | 1 | cublas |
+| residual add (xs + attn_out) | 1 | elementwise |
+| post_attention_layernorm | 1 | our custom kernel |
+| gate_proj, up_proj | 2 | cublas |
+| SiLU activation | 1 | elementwise |
+| gate × up multiply | 1 | elementwise |
+| down_proj | 1 | cublas |
+| residual add (xs + mlp_out) | 1 | elementwise |
+| **Layer total** | **~25** | |
+
+28 layers × 25 = **700 kernel launches** for the transformer body.
+Plus embedding (1) + final norm (1) + lm_head GEMM (1) + sampling argmax (2) = **~705 per decode step**.
+
+### Before vs After RMSNorm Fusion
+
+```
+Before fusion:  57 RMSNorm × 5 ops each  = 285 kernel launches for norms
+                + ~420 non-norm kernels
+                = ~705 total (was ~905 total)
+
+Wait — accounting correctly:
+  57 RmsNorm calls × 5 eager ops = 285
+  Our fused version: 57 × 1 = 57
+  Saved: 228 launches
+
+After fusion:  ~705 - 228 = ~477 kernel launches/decode  (revised estimate)
 ```
 
-### Results
+The measured +9% throughput from fusing 228 launches out of ~705 is consistent with launch overhead being ~5-10% of decode step time.
 
-_To be filled._
+### What We Learned
+
+1. **cudarc is invisible to standard profiling tools** because it uses the driver API directly. The correct profiling approach would require: (a) CUPTI driver API callbacks (not runtime API interception), or (b) instrumenting Rust with `cudarc::CudaEvent` timing around each op, or (c) NVTX markers + nsys on a patched version.
+
+2. **~477 kernel launches per decode step remain** (revised down from our earlier "~100" estimate which was too optimistic). Each launch costs ~5µs CPU-side overhead → ~2.4ms per decode step in launch tax.
+
+3. **GQA `repeat_kv + contiguous` is 4 launches/layer = 112 total.** These could potentially be eliminated by a fused GQA attention kernel that works directly on 4 KV heads for 28 query heads, but that's a non-trivial CUDA kernel to write.
+
+4. **The dominant targets are the GEMMs + attention.** 28 layers × 8 GEMMs = 224 GEMM launches. A CUDA graph captures all of these in one replay.
+
+5. **The gap math now makes sense**: 477 launches × 5µs = 2.4ms overhead vs vLLM's ~0.05ms (graph replay). At 25ms/token, that's 9.4% overhead tax — matching our observed ~10% gap.
+
+---
+
+## Experiment 6 — Pre-allocated KV Cache → CUDA Graph Capture
+
+**Date**: 2026-04-10
+**Status**: Planned
+**Hypothesis**: Pre-allocating the KV cache to `max_seq_len` at model load time makes decode step tensor shapes static, enabling CUDA graph capture. Graph replay would replace ~477 individual `cuLaunchKernel` calls with 1, closing the remaining ~10% gap vs vLLM and pushing us above 43 tok/s for the first time.
+
+### Background
+
+Current implementation (`src/engine/arch/models/qwen2.rs` line ~158):
+```rust
+Some((pk, pv)) => (
+    Tensor::cat(&[pk, &key_states], 2)?,
+    Tensor::cat(&[pv, &value_states], 2)?,
+),
+```
+
+`Tensor::cat` changes the tensor shape each decode step (grows by 1 along dim 2). CUDA graph capture requires identical shapes on replay — a dynamic shape causes graph invalidation.
+
+### Plan
+
+1. Change KV cache storage to pre-allocated fixed-shape tensors: `[batch, num_kv_heads, max_seq_len, head_dim]`
+2. Track `seqlen_offset` as write cursor; each decode step writes to `kv_cache[:, :, seqlen_offset, :]`
+3. Read back `kv_cache[:, :, :seqlen_offset+1, :]` for attention (still a slice — need to verify shape consistency for graph capture or use mask instead)
+4. Capture CUDA graph for the decode forward pass using cudarc's stream capture API
+5. Replay graph on each subsequent decode step
+
+### Expected Result
+
+```
+Current:   39 tok/s  (61% of ceiling)
+Target:   ~44 tok/s  (69%)       ← first time beating vLLM at 43 tok/s
+```
 
 ---
 
 ## Open Questions
 
-- **Kernel count after RMSNorm fusion**: We estimate ~100 launches/decode. Need nsys to confirm and identify the breakdown (attention matmuls, softmax, residual adds, etc.).
+- **KV cache slice shape in graph**: The attention mask approach (attend to fixed-length KV with 0-mask on future positions) may be needed to keep tensor shapes truly static across decode steps.
 
-- **Pre-allocated KV cache → CUDA graphs**: If we allocate KV cache to `max_seq_len` at load time (instead of growing it), the decode step tensor shapes become static and we can capture a CUDA graph. This is the path to closing the remaining ~10% gap.
+- **Graph per sequence length**: vLLM pre-captures ~35 graphs at startup (one per batch size). We may need one graph per `seqlen_offset` bucket or use padding to fixed sizes.
 
-- **Concurrent throughput**: The 2× degradation under concurrent load is a real production problem. True continuous batching (merging in-flight requests into the same GPU dispatch) is a larger architectural change.
+- **Concurrent throughput**: The 2× degradation under concurrent load is a separate problem from single-request throughput. True continuous batching (merging in-flight requests into the same GPU dispatch) is a larger architectural change.
 
 - **FA2 on sm_80+ hardware**: Valid experiment, just needs a different box.
 
