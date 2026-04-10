@@ -248,7 +248,47 @@ The measured +9% throughput from fusing 228 launches out of ~705 is consistent w
 
 ---
 
-## Experiment 6 — Pre-allocated KV Cache → CUDA Graph Capture
+## Experiment 6A — GQA Attention Without KV Head Expansion
+
+**Date**: 2026-04-10
+**Status**: Attempted, blocked by candle matmul constraint
+
+**Hypothesis**: Replace `repeat_kv + contiguous` (4 kernel launches/layer = 112 total) with 5D `broadcast_matmul` using stride-0 broadcasting, saving the KV expansion entirely.
+
+### What We Tried
+
+Replaced the attention forward pass with:
+```rust
+// Q: [b, kv_heads, groups, q_len, hd]
+let query_states = query_states.reshape((b_sz, kv_heads, groups, q_len, head_dim))?;
+// K, V: [b, kv_heads, 1, kv_len, hd] — broadcast over groups via stride-0
+let key_states_b = key_states.unsqueeze(2)?;
+let attn_weights = query_states.broadcast_matmul(&key_states_b.transpose(3,4)?)?;
+```
+
+### Result: **Blocked — candle matmul requires contiguous tensors**
+
+```
+Error: matmul is only supported for contiguous tensors
+lstride: Layout { shape: [1, 4, 7, 5, 128], stride: [17920, 4480, 640, 128, 1] }
+rstride: Layout { shape: [1, 4, 7, 128, 5], stride: [17920, 4480, 640, 5, 1] }
+```
+
+`broadcast_matmul` internally calls `Tensor::broadcast_as()` to expand K from `[b, 4, 1, kv_len, hd]` to `[b, 4, 7, kv_len, hd]` using stride-0 (no copy, non-contiguous view). candle's matmul then checks for contiguity and fails.
+
+Adding `.contiguous()` before the matmul would fix the error but would materialize the 7× expansion, producing the same memory footprint as `repeat_kv + contiguous`. **No net benefit.**
+
+### What We Learned
+
+1. **candle's matmul requires contiguous tensors.** cuBLAS can handle strided (non-contiguous) inputs through its `lda/ldb` stride parameters, but candle doesn't expose this — it forces a contiguous layout before dispatching to cuBLAS.
+
+2. **GQA without expansion requires a custom kernel.** To truly skip the KV expansion, we'd need a fused attention CUDA kernel that takes `num_kv_heads` K/V tensors and `num_attention_heads` Q tensors, with each Q head knowing which KV head to attend. This is the Flash Attention GQA variant. Not feasible within candle's abstraction.
+
+3. **The `repeat_kv + contiguous` cost is unavoidable in candle.** 4 kernel launches per layer × 28 layers = 112 launches, copying data from `[1, 4, kv_len, 128]` → `[1, 28, kv_len, 128]`. This is a real cost but not removable without a custom attention kernel.
+
+---
+
+## Experiment 6B — Pre-allocated KV Cache → CUDA Graph Capture
 
 **Date**: 2026-04-10
 **Status**: Planned
@@ -288,6 +328,8 @@ Target:   ~44 tok/s  (69%)       ← first time beating vLLM at 43 tok/s
 - **KV cache slice shape in graph**: The attention mask approach (attend to fixed-length KV with 0-mask on future positions) may be needed to keep tensor shapes truly static across decode steps.
 
 - **Graph per sequence length**: vLLM pre-captures ~35 graphs at startup (one per batch size). We may need one graph per `seqlen_offset` bucket or use padding to fixed sizes.
+
+- **GQA without expansion**: Requires a custom fused attention kernel (Flash Attention GQA variant) or raw cuBLAS strided batched GEMM via cudarc. Not feasible within candle's `Tensor::matmul` (requires contiguous inputs, which forces materialization of any broadcast expansion).
 
 - **Concurrent throughput**: The 2× degradation under concurrent load is a separate problem from single-request throughput. True continuous batching (merging in-flight requests into the same GPU dispatch) is a larger architectural change.
 
