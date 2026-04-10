@@ -98,7 +98,7 @@ impl candle_core::CustomOp2 for FusedRmsNorm {
         let slice = match (&s1.slice, &s2.slice) {
             (CudaStorageSlice::F32(x_sl), CudaStorageSlice::F32(w_sl)) => {
                 let x_sl = x_sl.slice(l1.start_offset()..);
-                let dst = unsafe { dev.alloc::<f32>(shape.elem_count()) }.w()?;
+                let dst = unsafe { dev.alloc::<f32>(shape.elem_count()) }?;
                 let mut b = func.builder();
                 b.arg(&dst).arg(&x_sl).arg(w_sl).arg(&hidden_i).arg(&eps_f);
                 unsafe { b.launch(cfg) }.w()?;
@@ -106,7 +106,7 @@ impl candle_core::CustomOp2 for FusedRmsNorm {
             }
             (CudaStorageSlice::F16(x_sl), CudaStorageSlice::F16(w_sl)) => {
                 let x_sl = x_sl.slice(l1.start_offset()..);
-                let dst = unsafe { dev.alloc::<half::f16>(shape.elem_count()) }.w()?;
+                let dst = unsafe { dev.alloc::<half::f16>(shape.elem_count()) }?;
                 let mut b = func.builder();
                 b.arg(&dst).arg(&x_sl).arg(w_sl).arg(&hidden_i).arg(&eps_f);
                 unsafe { b.launch(cfg) }.w()?;

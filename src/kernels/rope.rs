@@ -91,7 +91,7 @@ impl candle_core::CustomOp2 for RopeSingle {
         let dev = s_inp.device();
 
         let (sin_st, sin_layout) = self.sin.storage_and_layout();
-        let s_sin = match sin_st.as_ref() {
+        let s_sin = match &*sin_st {
             candle_core::Storage::Cuda(cs) => cs,
             _ => candle_core::bail!("rope: sin must be on CUDA"),
         };
@@ -124,7 +124,7 @@ impl candle_core::CustomOp2 for RopeSingle {
                 let inp_sl = inp_sl.slice(inp_off..);
                 let cos_sl = cos_sl.slice(cos_off..);
                 let sin_sl = sin_sl.slice(sin_off..);
-                let dst = unsafe { dev.alloc::<f32>(n) }.w()?;
+                let dst = unsafe { dev.alloc::<f32>(n) }?;
                 let func = dev.get_or_load_custom_func("rope_single_f32", MODULE, PTX)?;
                 let mut b = func.builder();
                 b.arg(&dst).arg(&inp_sl).arg(&cos_sl).arg(&sin_sl)
@@ -140,7 +140,7 @@ impl candle_core::CustomOp2 for RopeSingle {
                 let inp_sl = inp_sl.slice(inp_off..);
                 let cos_sl = cos_sl.slice(cos_off..);
                 let sin_sl = sin_sl.slice(sin_off..);
-                let dst = unsafe { dev.alloc::<half::f16>(n) }.w()?;
+                let dst = unsafe { dev.alloc::<half::f16>(n) }?;
                 let func = dev.get_or_load_custom_func("rope_single_f16", MODULE, PTX)?;
                 let mut b = func.builder();
                 b.arg(&dst).arg(&inp_sl).arg(&cos_sl).arg(&sin_sl)
