@@ -68,17 +68,17 @@ impl RotaryEmbedding {
     }
 }
 
-// ── MLP ───────────────────────────────────────────────────────────────────────
+// ── Mlp ───────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct MLP {
+struct Mlp {
     gate_proj: Linear,
     up_proj: Linear,
     down_proj: Linear,
     act_fn: Activation,
 }
 
-impl MLP {
+impl Mlp {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
@@ -89,7 +89,7 @@ impl MLP {
     }
 }
 
-impl Module for MLP {
+impl Module for Mlp {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let lhs = x.apply(&self.gate_proj)?.apply(&self.act_fn)?;
         let rhs = x.apply(&self.up_proj)?;
@@ -197,7 +197,7 @@ impl Attention {
 #[derive(Debug, Clone)]
 struct DecoderLayer {
     self_attn: Attention,
-    mlp: MLP,
+    mlp: Mlp,
     ln1: RmsNorm,
     ln2: RmsNorm,
 }
@@ -206,7 +206,7 @@ impl DecoderLayer {
     fn new(cfg: &Config, rotary: Arc<RotaryEmbedding>, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             self_attn: Attention::new(cfg, rotary, vb.pp("self_attn"))?,
-            mlp: MLP::new(cfg, vb.pp("mlp"))?,
+            mlp: Mlp::new(cfg, vb.pp("mlp"))?,
             ln1: RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?,
             ln2: RmsNorm::new(
                 cfg.hidden_size,
