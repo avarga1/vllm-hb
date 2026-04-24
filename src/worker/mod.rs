@@ -260,7 +260,7 @@ impl Worker {
         for (mut group, hit_blocks) in outputs
             .to_prefill
             .into_iter()
-            .zip(outputs.prefix_hit_blocks.into_iter())
+            .zip(outputs.prefix_hit_blocks)
         {
             match self.step_prefill(&mut group, hit_blocks) {
                 Ok(()) => {}
