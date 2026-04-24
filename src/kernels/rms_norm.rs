@@ -71,29 +71,29 @@ impl candle_core::CustomOp2 for FusedRmsNorm {
 
         let dev = s1.device();
 
-        let shape  = l1.shape();
+        let shape = l1.shape();
         let hidden = *shape.dims().last().unwrap();
-        let rows   = shape.elem_count() / hidden;
+        let rows = shape.elem_count() / hidden;
 
         let block: u32 = if hidden <= 256 { 256 } else { 512 };
         let fn_name = match (s1.dtype(), block) {
             (candle_core::DType::F32, 256) => "rms_norm_f32_256",
-            (candle_core::DType::F32, _)   => "rms_norm_f32_512",
+            (candle_core::DType::F32, _) => "rms_norm_f32_512",
             (candle_core::DType::F16, 256) => "rms_norm_f16_256",
-            (candle_core::DType::F16, _)   => "rms_norm_f16_512",
+            (candle_core::DType::F16, _) => "rms_norm_f16_512",
             (dt, _) => candle_core::bail!("rms_norm: unsupported dtype {:?}", dt),
         };
 
         let func = dev.get_or_load_custom_func(fn_name, MODULE, PTX)?;
 
         let cfg = LaunchConfig {
-            grid_dim:         (rows as u32, 1, 1),
-            block_dim:        (block, 1, 1),
+            grid_dim: (rows as u32, 1, 1),
+            block_dim: (block, 1, 1),
             shared_mem_bytes: 32 * 4,
         };
 
         let hidden_i = hidden as i32;
-        let eps_f    = self.eps as f32;
+        let eps_f = self.eps as f32;
 
         let slice = match (&s1.slice, &s2.slice) {
             (CudaStorageSlice::F32(x_sl), CudaStorageSlice::F32(w_sl)) => {

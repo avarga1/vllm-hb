@@ -84,23 +84,23 @@ impl candle_core::CustomOp2 for KvSlotAssign {
         use candle_core::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
         use candle_core::cuda_backend::{CudaStorageSlice, WrapErr};
 
-        let dev   = s1.device();
+        let dev = s1.device();
         let shape = l1.shape(); // [1, nkv, max_seq, head_dim]
-        let dims  = shape.dims();
+        let dims = shape.dims();
 
-        let nkv      = dims[1] as i32;
-        let max_seq  = dims[2] as i32;
+        let nkv = dims[1] as i32;
+        let max_seq = dims[2] as i32;
         let head_dim = dims[3] as i32;
         let offset_i = self.offset as i32;
 
         // One thread per (kv_head × head_dim) element.
         let total_threads = (nkv * head_dim) as u32;
         let block = 128u32;
-        let grid  = total_threads.div_ceil(block);
+        let grid = total_threads.div_ceil(block);
 
         let cfg = LaunchConfig {
-            grid_dim:         (grid, 1, 1),
-            block_dim:        (block, 1, 1),
+            grid_dim: (grid, 1, 1),
+            block_dim: (block, 1, 1),
             shared_mem_bytes: 0,
         };
 
@@ -117,11 +117,11 @@ impl candle_core::CustomOp2 for KvSlotAssign {
                     let src_view = src_sl.slice(l2.start_offset()..);
                     let mut b = func.builder();
                     b.arg(&dst_view)
-                     .arg(&src_view)
-                     .arg(&nkv)
-                     .arg(&max_seq)
-                     .arg(&head_dim)
-                     .arg(&offset_i);
+                        .arg(&src_view)
+                        .arg(&nkv)
+                        .arg(&max_seq)
+                        .arg(&head_dim)
+                        .arg(&offset_i);
                     unsafe { b.launch(cfg) }.w()?;
                 } // dst_view, src_view dropped here
                 CudaStorageSlice::F16(dst)
@@ -135,11 +135,11 @@ impl candle_core::CustomOp2 for KvSlotAssign {
                     let src_view = src_sl.slice(l2.start_offset()..);
                     let mut b = func.builder();
                     b.arg(&dst_view)
-                     .arg(&src_view)
-                     .arg(&nkv)
-                     .arg(&max_seq)
-                     .arg(&head_dim)
-                     .arg(&offset_i);
+                        .arg(&src_view)
+                        .arg(&nkv)
+                        .arg(&max_seq)
+                        .arg(&head_dim)
+                        .arg(&offset_i);
                     unsafe { b.launch(cfg) }.w()?;
                 }
                 CudaStorageSlice::F32(dst)

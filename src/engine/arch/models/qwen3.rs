@@ -4,28 +4,30 @@
 
 use super::RmsNorm;
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{kv_cache::ConcatKvCache, Activation, Linear, VarBuilder, linear_b, linear_no_bias};
+use candle_nn::{
+    Activation, Linear, VarBuilder, kv_cache::ConcatKvCache, linear_b, linear_no_bias,
+};
 use candle_transformers::utils::repeat_kv;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct Config {
-    pub vocab_size:              usize,
-    pub hidden_size:             usize,
-    pub intermediate_size:       usize,
-    pub num_hidden_layers:       usize,
-    pub num_attention_heads:     usize,
-    pub head_dim:                usize,
-    pub attention_bias:          bool,
-    pub num_key_value_heads:     usize,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub head_dim: usize,
+    pub attention_bias: bool,
+    pub num_key_value_heads: usize,
     pub max_position_embeddings: usize,
-    pub sliding_window:          Option<usize>,
-    pub max_window_layers:       usize,
-    pub tie_word_embeddings:     bool,
-    pub rope_theta:              f64,
-    pub rms_norm_eps:            f64,
-    pub use_sliding_window:      bool,
-    pub hidden_act:              Activation,
+    pub sliding_window: Option<usize>,
+    pub max_window_layers: usize,
+    pub tie_word_embeddings: bool,
+    pub rope_theta: f64,
+    pub rms_norm_eps: f64,
+    pub use_sliding_window: bool,
+    pub hidden_act: Activation,
 }
 
 // ── Rotary Embeddings ─────────────────────────────────────────────────────────
@@ -45,8 +47,7 @@ impl RotaryEmbedding {
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f64 / dim as f64) as f32)
             .collect();
         let inv_freq_len = inv_freq.len();
-        let inv_freq =
-            Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
+        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
         let t = Tensor::arange(0u32, max_seq_len as u32, dev)?
             .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
@@ -72,18 +73,18 @@ impl RotaryEmbedding {
 #[derive(Debug, Clone)]
 struct MLP {
     gate_proj: Linear,
-    up_proj:   Linear,
+    up_proj: Linear,
     down_proj: Linear,
-    act_fn:    Activation,
+    act_fn: Activation,
 }
 
 impl MLP {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             gate_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("gate_proj"))?,
-            up_proj:   linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
+            up_proj: linear_no_bias(cfg.hidden_size, cfg.intermediate_size, vb.pp("up_proj"))?,
             down_proj: linear_no_bias(cfg.intermediate_size, cfg.hidden_size, vb.pp("down_proj"))?,
-            act_fn:    cfg.hidden_act,
+            act_fn: cfg.hidden_act,
         })
     }
 }
@@ -106,13 +107,13 @@ struct Attention {
     o_proj: Linear,
     q_norm: RmsNorm,
     k_norm: RmsNorm,
-    num_heads:     usize,
-    num_kv_heads:  usize,
+    num_heads: usize,
+    num_kv_heads: usize,
     num_kv_groups: usize,
-    head_dim:      usize,
-    hidden_size:   usize,
-    rotary_emb:    Arc<RotaryEmbedding>,
-    kv_cache:      ConcatKvCache,
+    head_dim: usize,
+    hidden_size: usize,
+    rotary_emb: Arc<RotaryEmbedding>,
+    kv_cache: ConcatKvCache,
 }
 
 impl Attention {
@@ -120,22 +121,22 @@ impl Attention {
         if cfg.use_sliding_window {
             candle_core::bail!("sliding window is not supported")
         }
-        let hd  = cfg.head_dim;
-        let nh  = cfg.num_attention_heads;
+        let hd = cfg.head_dim;
+        let nh = cfg.num_attention_heads;
         let nkv = cfg.num_key_value_heads;
-        let b   = cfg.attention_bias;
+        let b = cfg.attention_bias;
         Ok(Self {
-            q_proj: linear_b(cfg.hidden_size, nh  * hd, b, vb.pp("q_proj"))?,
+            q_proj: linear_b(cfg.hidden_size, nh * hd, b, vb.pp("q_proj"))?,
             k_proj: linear_b(cfg.hidden_size, nkv * hd, b, vb.pp("k_proj"))?,
             v_proj: linear_b(cfg.hidden_size, nkv * hd, b, vb.pp("v_proj"))?,
-            o_proj: linear_b(nh * hd, cfg.hidden_size,  b, vb.pp("o_proj"))?,
+            o_proj: linear_b(nh * hd, cfg.hidden_size, b, vb.pp("o_proj"))?,
             q_norm: RmsNorm::new(hd, cfg.rms_norm_eps, vb.pp("q_norm"))?,
             k_norm: RmsNorm::new(hd, cfg.rms_norm_eps, vb.pp("k_norm"))?,
-            num_heads:     nh,
-            num_kv_heads:  nkv,
+            num_heads: nh,
+            num_kv_heads: nkv,
             num_kv_groups: nh / nkv,
-            head_dim:      hd,
-            hidden_size:   hd * nh,
+            head_dim: hd,
+            hidden_size: hd * nh,
             rotary_emb,
             kv_cache: ConcatKvCache::new(2),
         })
@@ -144,12 +145,21 @@ impl Attention {
     fn forward(&mut self, x: &Tensor, attn_mask: Option<&Tensor>, offset: usize) -> Result<Tensor> {
         let (b, l, _) = x.dims3()?;
 
-        let q = self.q_proj.forward(x)?
-            .reshape((b, l, self.num_heads, self.head_dim))?.transpose(1, 2)?;
-        let k = self.k_proj.forward(x)?
-            .reshape((b, l, self.num_kv_heads, self.head_dim))?.transpose(1, 2)?;
-        let v = self.v_proj.forward(x)?
-            .reshape((b, l, self.num_kv_heads, self.head_dim))?.transpose(1, 2)?;
+        let q = self
+            .q_proj
+            .forward(x)?
+            .reshape((b, l, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let k = self
+            .k_proj
+            .forward(x)?
+            .reshape((b, l, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?;
+        let v = self
+            .v_proj
+            .forward(x)?
+            .reshape((b, l, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?;
 
         // Per-head RMSNorm
         let q_flat = q.flatten(0, 2)?;
@@ -177,7 +187,9 @@ impl Attention {
             .apply(&self.o_proj)
     }
 
-    fn clear_kv_cache(&mut self) { self.kv_cache.reset(); }
+    fn clear_kv_cache(&mut self) {
+        self.kv_cache.reset();
+    }
 }
 
 // ── Decoder Layer ─────────────────────────────────────────────────────────────
@@ -185,31 +197,37 @@ impl Attention {
 #[derive(Debug, Clone)]
 struct DecoderLayer {
     self_attn: Attention,
-    mlp:       MLP,
-    ln1:       RmsNorm,
-    ln2:       RmsNorm,
+    mlp: MLP,
+    ln1: RmsNorm,
+    ln2: RmsNorm,
 }
 
 impl DecoderLayer {
     fn new(cfg: &Config, rotary: Arc<RotaryEmbedding>, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
             self_attn: Attention::new(cfg, rotary, vb.pp("self_attn"))?,
-            mlp:       MLP::new(cfg, vb.pp("mlp"))?,
+            mlp: MLP::new(cfg, vb.pp("mlp"))?,
             ln1: RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?,
-            ln2: RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("post_attention_layernorm"))?,
+            ln2: RmsNorm::new(
+                cfg.hidden_size,
+                cfg.rms_norm_eps,
+                vb.pp("post_attention_layernorm"),
+            )?,
         })
     }
 
     fn forward(&mut self, x: &Tensor, mask: Option<&Tensor>, offset: usize) -> Result<Tensor> {
-        let h  = self.ln1.forward(x)?;
-        let h  = self.self_attn.forward(&h, mask, offset)?;
-        let x  = (x + h)?;
+        let h = self.ln1.forward(x)?;
+        let h = self.self_attn.forward(&h, mask, offset)?;
+        let x = (x + h)?;
         let h2 = self.ln2.forward(&x)?;
         let h2 = h2.apply(&self.mlp)?;
         x + h2
     }
 
-    fn clear_kv_cache(&mut self) { self.self_attn.clear_kv_cache(); }
+    fn clear_kv_cache(&mut self) {
+        self.self_attn.clear_kv_cache();
+    }
 }
 
 // ── Model ─────────────────────────────────────────────────────────────────────
@@ -217,17 +235,16 @@ impl DecoderLayer {
 #[derive(Debug, Clone)]
 pub struct Model {
     embed_tokens: candle_nn::Embedding,
-    layers:       Vec<DecoderLayer>,
-    norm:         RmsNorm,
-    device:       Device,
-    dtype:        DType,
+    layers: Vec<DecoderLayer>,
+    norm: RmsNorm,
+    device: Device,
+    dtype: DType,
 }
 
 impl Model {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let embed_tokens = candle_nn::embedding(
-            cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"),
-        )?;
+        let embed_tokens =
+            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
         let rotary = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb.pp("model.layers");
@@ -239,15 +256,23 @@ impl Model {
             layers,
             norm: RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?,
             device: vb.device().clone(),
-            dtype:  vb.dtype(),
+            dtype: vb.dtype(),
         })
     }
 
     fn clear_kv_cache(&mut self) {
-        for l in &mut self.layers { l.clear_kv_cache(); }
+        for l in &mut self.layers {
+            l.clear_kv_cache();
+        }
     }
 
-    fn causal_mask(&self, b: usize, tgt: usize, offset: usize, sw: Option<usize>) -> Result<Tensor> {
+    fn causal_mask(
+        &self,
+        b: usize,
+        tgt: usize,
+        offset: usize,
+        sw: Option<usize>,
+    ) -> Result<Tensor> {
         let minf = f32::NEG_INFINITY;
         let mask: Vec<_> = (0..tgt)
             .flat_map(|i| {
@@ -255,20 +280,23 @@ impl Model {
                     let past_ok = j <= i + offset;
                     let sw_ok = match sw {
                         Some(w) => (i + offset) as i64 - j as i64 <= w as i64,
-                        None    => true,
+                        None => true,
                     };
                     if past_ok && sw_ok { 0. } else { minf }
                 })
             })
             .collect();
-        Tensor::from_slice(&mask, (b, 1, tgt, tgt + offset), &self.device)?
-            .to_dtype(self.dtype)
+        Tensor::from_slice(&mask, (b, 1, tgt, tgt + offset), &self.device)?.to_dtype(self.dtype)
     }
 
     pub fn forward(&mut self, input: &Tensor, offset: usize) -> Result<Tensor> {
         let (b, l) = input.dims2()?;
         let mut h = self.embed_tokens.forward(input)?;
-        let causal = if l == 1 { None } else { Some(self.causal_mask(b, l, offset, None)?) };
+        let causal = if l == 1 {
+            None
+        } else {
+            Some(self.causal_mask(b, l, offset, None)?)
+        };
         for layer in &mut self.layers {
             h = layer.forward(&h, causal.as_ref(), offset)?;
         }
@@ -280,7 +308,7 @@ impl Model {
 
 #[derive(Debug, Clone)]
 pub struct ModelForCausalLM {
-    base:    Model,
+    base: Model,
     lm_head: Linear,
 }
 
@@ -303,5 +331,7 @@ impl ModelForCausalLM {
             .apply(&self.lm_head)
     }
 
-    pub fn clear_kv_cache(&mut self) { self.base.clear_kv_cache(); }
+    pub fn clear_kv_cache(&mut self) {
+        self.base.clear_kv_cache();
+    }
 }

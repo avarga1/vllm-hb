@@ -22,12 +22,7 @@ const MODULE: &str = "vllm_hb_rope";
 ///
 /// - `q`, `k`    : `[batch, num_heads, seq_len, head_dim]`
 /// - `cos`, `sin`: `[seq_len, head_dim/2]`
-pub fn apply(
-    q: &Tensor,
-    k: &Tensor,
-    cos: &Tensor,
-    sin: &Tensor,
-) -> Result<(Tensor, Tensor)> {
+pub fn apply(q: &Tensor, k: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<(Tensor, Tensor)> {
     let dtype = q.dtype();
     if !matches!(dtype, DType::F32 | DType::F16) {
         return candle_fallback(q, k, cos, sin);
@@ -37,9 +32,13 @@ pub fn apply(
     if matches!(q.device(), Device::Cuda(_)) {
         let q_dims = q.dims();
         if q_dims.len() == 4 {
-            let seq_len  = q_dims[2] as i32;
+            let seq_len = q_dims[2] as i32;
             let head_dim = q_dims[3] as i32;
-            let op = RopeSingle { sin: sin.clone(), seq_len, head_dim };
+            let op = RopeSingle {
+                sin: sin.clone(),
+                seq_len,
+                head_dim,
+            };
             let out_q = q.apply_op2_no_bwd(cos, &op)?;
             let out_k = k.apply_op2_no_bwd(cos, &op)?;
             return Ok((out_q, out_k));
@@ -55,8 +54,8 @@ pub fn apply(
 /// Grid: (batch * num_heads * seq_len,)  Block: (head_dim / 2,)
 #[cfg(feature = "cuda")]
 struct RopeSingle {
-    sin:      Tensor,
-    seq_len:  i32,
+    sin: Tensor,
+    seq_len: i32,
     head_dim: i32,
 }
 
@@ -96,23 +95,23 @@ impl candle_core::CustomOp2 for RopeSingle {
             _ => candle_core::bail!("rope: sin must be on CUDA"),
         };
 
-        let shape    = l_inp.shape();
-        let n        = shape.elem_count();
-        let tokens   = n / self.head_dim as usize;  // batch * heads * seq_len
+        let shape = l_inp.shape();
+        let n = shape.elem_count();
+        let tokens = n / self.head_dim as usize; // batch * heads * seq_len
         let half_dim = self.head_dim / 2;
 
         // Grid: one block per (batch, head, token) triple.
         // Block: one thread per half-dim element.
         let cfg = LaunchConfig {
-            grid_dim:         (tokens as u32, 1, 1),
-            block_dim:        (half_dim as u32, 1, 1),
+            grid_dim: (tokens as u32, 1, 1),
+            block_dim: (half_dim as u32, 1, 1),
             shared_mem_bytes: 0,
         };
 
         let inp_off = l_inp.start_offset();
         let cos_off = l_cos.start_offset();
         let sin_off = sin_layout.start_offset();
-        let seq_len  = self.seq_len;
+        let seq_len = self.seq_len;
         let head_dim = self.head_dim;
 
         let slice = match (&s_inp.slice, &s_cos.slice, &s_sin.slice) {
@@ -127,8 +126,12 @@ impl candle_core::CustomOp2 for RopeSingle {
                 let dst = unsafe { dev.alloc::<f32>(n) }?;
                 let func = dev.get_or_load_custom_func("rope_single_f32", MODULE, PTX)?;
                 let mut b = func.builder();
-                b.arg(&dst).arg(&inp_sl).arg(&cos_sl).arg(&sin_sl)
-                 .arg(&seq_len).arg(&head_dim);
+                b.arg(&dst)
+                    .arg(&inp_sl)
+                    .arg(&cos_sl)
+                    .arg(&sin_sl)
+                    .arg(&seq_len)
+                    .arg(&head_dim);
                 unsafe { b.launch(cfg) }.w()?;
                 CudaStorageSlice::F32(dst)
             }
@@ -143,8 +146,12 @@ impl candle_core::CustomOp2 for RopeSingle {
                 let dst = unsafe { dev.alloc::<half::f16>(n) }?;
                 let func = dev.get_or_load_custom_func("rope_single_f16", MODULE, PTX)?;
                 let mut b = func.builder();
-                b.arg(&dst).arg(&inp_sl).arg(&cos_sl).arg(&sin_sl)
-                 .arg(&seq_len).arg(&head_dim);
+                b.arg(&dst)
+                    .arg(&inp_sl)
+                    .arg(&cos_sl)
+                    .arg(&sin_sl)
+                    .arg(&seq_len)
+                    .arg(&head_dim);
                 unsafe { b.launch(cfg) }.w()?;
                 CudaStorageSlice::F16(dst)
             }
@@ -161,12 +168,7 @@ impl candle_core::CustomOp2 for RopeSingle {
 
 // ── Candle fallback (CPU or unsupported dtype) ────────────────────────────────
 
-fn candle_fallback(
-    q: &Tensor,
-    k: &Tensor,
-    cos: &Tensor,
-    sin: &Tensor,
-) -> Result<(Tensor, Tensor)> {
+fn candle_fallback(q: &Tensor, k: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<(Tensor, Tensor)> {
     use candle_core::D;
     let half = q.dim(D::Minus1)? / 2;
 

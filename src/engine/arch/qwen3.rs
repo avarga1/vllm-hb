@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use super::models::qwen3;
 
 pub struct Qwen3Backend {
-    model:  Mutex<qwen3::ModelForCausalLM>,
+    model: Mutex<qwen3::ModelForCausalLM>,
     device: Device,
 }
 

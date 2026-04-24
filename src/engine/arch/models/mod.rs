@@ -13,7 +13,7 @@ pub mod qwen3;
 #[derive(Debug, Clone)]
 pub(super) struct RmsNorm {
     weight: candle_core::Tensor,
-    eps:    f64,
+    eps: f64,
 }
 
 impl RmsNorm {
@@ -29,7 +29,6 @@ impl RmsNorm {
 
 impl candle_core::Module for RmsNorm {
     fn forward(&self, x: &candle_core::Tensor) -> candle_core::Result<candle_core::Tensor> {
-        crate::kernels::rms_norm::apply(x, &self.weight, self.eps)
-            .map_err(candle_core::Error::wrap)
+        crate::kernels::rms_norm::apply(x, &self.weight, self.eps).map_err(candle_core::Error::wrap)
     }
 }

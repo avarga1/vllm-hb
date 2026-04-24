@@ -23,8 +23,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use candle_core::{Device, Tensor};
 use candle_core::quantized::gguf_file;
+use candle_core::{Device, Tensor};
 use candle_transformers::models::quantized_llama::ModelWeights;
 
 // ── Backend ───────────────────────────────────────────────────────────────────

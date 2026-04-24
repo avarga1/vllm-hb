@@ -204,7 +204,7 @@ impl Engine {
         let intermediate_size = hidden_size; // conservative fallback
 
         tracing::info!(
-            vocab  = vocab_size,
+            vocab = vocab_size,
             hidden = hidden_size,
             layers = num_layers,
             "GGUF architecture"

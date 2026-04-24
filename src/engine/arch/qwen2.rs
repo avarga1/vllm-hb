@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use super::models::qwen2;
 
 pub struct Qwen2Backend {
-    model:  Mutex<qwen2::ModelForCausalLM>,
+    model: Mutex<qwen2::ModelForCausalLM>,
     device: Device,
 }
 
