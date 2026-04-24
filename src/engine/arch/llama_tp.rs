@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use candle_core::{D, DType, Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 #[cfg(not(feature = "flash-attn"))]
 use candle_nn::ops::softmax;
 use parking_lot::Mutex;
@@ -99,16 +99,7 @@ impl RmsNorm {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let orig_dtype = x.dtype();
-        let x_f32 = x.to_dtype(DType::F32)?;
-        let rms = (x_f32.sqr()?.mean_keepdim(D::Minus1)? + self.eps)?
-            .sqrt()?
-            .recip()?;
-        let normed = x_f32.broadcast_mul(&rms)?;
-        let out = normed
-            .to_dtype(orig_dtype)?
-            .broadcast_mul(&self.weight.to_dtype(orig_dtype)?)?;
-        Ok(out)
+        crate::kernels::rms_norm::apply(x, &self.weight, self.eps)
     }
 }
 

@@ -92,11 +92,7 @@ impl RmsNorm {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x_f32 = x.to_dtype(DType::F32)?;
-        let variance = x_f32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
-        let x_norm = x_f32.broadcast_div(&(variance + self.eps)?.sqrt()?)?;
-        let out = x_norm.to_dtype(x.dtype())?.broadcast_mul(&self.weight)?;
-        Ok(out)
+        crate::kernels::rms_norm::apply(x, &self.weight, self.eps)
     }
 }
 

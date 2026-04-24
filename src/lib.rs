@@ -11,6 +11,7 @@
 pub mod batch;
 pub mod bench;
 pub mod engine;
+pub mod kernels;
 pub mod sampling;
 pub mod server;
 pub mod tokenize;

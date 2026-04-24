@@ -4,15 +4,18 @@
 //! devirtualize and inline the forward call completely.  When a new
 //! architecture is supported, add a variant here and a module below.
 
+pub mod gguf_llama;
 pub mod llama;
 pub mod llama_tp;
 pub mod mixtral;
+pub(crate) mod models;
 pub mod phi3;
 pub mod qwen2;
 pub mod qwen3;
 
 use anyhow::Result;
 use candle_core::Tensor;
+pub use gguf_llama::GgufLlamaBackend;
 pub use llama::LlamaBackend;
 pub use llama_tp::TpLlamaBackend;
 pub use mixtral::MixtralBackend;
@@ -31,7 +34,9 @@ pub(crate) enum Backend {
     Mixtral(MixtralBackend),
     Qwen2(Qwen2Backend),
     Qwen3(Qwen3Backend),
-    Phi3(Phi3Backend), // stub — see arch/phi3.rs
+    Phi3(Phi3Backend),
+    /// GGUF-quantized Llama (Q4_K_M, Q8_0, etc.)
+    GgufLlama(GgufLlamaBackend),
 }
 
 impl Backend {
@@ -44,6 +49,7 @@ impl Backend {
             Self::Qwen2(m) => m.forward(token_ids, seq_pos),
             Self::Qwen3(m) => m.forward(token_ids, seq_pos),
             Self::Phi3(m) => m.forward(token_ids, seq_pos),
+            Self::GgufLlama(_) => anyhow::bail!("use forward_with_cache for GGUF models"),
         }
     }
 
@@ -56,6 +62,7 @@ impl Backend {
             Self::Qwen2(m) => m.reset_cache(),
             Self::Qwen3(m) => m.reset_cache(),
             Self::Phi3(m) => m.reset_cache(),
+            Self::GgufLlama(_) => Ok(()), // KV is per-sequence; no global reset needed
         }
     }
 
@@ -69,6 +76,7 @@ impl Backend {
             Self::Qwen2(m) => Ok(PerSeqCache::Mixtral(m.create_kv_cache())),
             Self::Qwen3(m) => Ok(PerSeqCache::Mixtral(m.create_kv_cache())),
             Self::Phi3(m) => Ok(PerSeqCache::Mixtral(m.create_kv_cache())),
+            Self::GgufLlama(m) => Ok(PerSeqCache::GgufLlama(m.create_seq_model())),
         }
     }
 
@@ -91,6 +99,9 @@ impl Backend {
                 m.forward_with_cache(token_ids, seq_pos, c)
             }
             (Self::Phi3(m), PerSeqCache::Mixtral(c)) => m.forward_with_cache(token_ids, seq_pos, c),
+            (Self::GgufLlama(backend), PerSeqCache::GgufLlama(model)) => {
+                GgufLlamaBackend::forward(model, token_ids, seq_pos, &backend.device)
+            }
             _ => anyhow::bail!("forward_with_cache: backend/cache type mismatch"),
         }
     }

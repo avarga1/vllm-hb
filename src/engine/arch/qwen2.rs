@@ -1,12 +1,13 @@
 //! Qwen 2 / 2.5 architecture backend.
 //!
-//! Uses `candle_transformers::models::qwen2` — detected by `model_type == "qwen2"`.
+//! Uses our vendored `models::qwen2` with fused RMSNorm.
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::qwen2;
 use parking_lot::Mutex;
+
+use super::models::qwen2;
 
 pub struct Qwen2Backend {
     model: Mutex<qwen2::ModelForCausalLM>,
@@ -32,8 +33,10 @@ impl Qwen2Backend {
 
     pub fn forward(&self, token_ids: &[u32], seq_pos: usize) -> Result<Tensor> {
         let input = Tensor::new(token_ids, &self.device)?.unsqueeze(0)?;
+        // logits shape: [1, 1, vocab_size] (model already narrows to last token)
         let logits = self.model.lock().forward(&input, seq_pos)?;
-        Ok(logits.squeeze(0)?)
+        let seq_len = logits.dim(1)?;
+        Ok(logits.squeeze(0)?.get(seq_len - 1)?)
     }
 
     pub fn reset_cache(&self) -> Result<()> {
@@ -42,7 +45,8 @@ impl Qwen2Backend {
     }
 
     pub fn create_kv_cache(&self) -> Vec<Option<(Tensor, Tensor)>> {
-        vec![] // internal cache — forward_with_cache delegates to forward()
+        self.model.lock().clear_kv_cache();
+        vec![]
     }
 
     pub fn forward_with_cache(
