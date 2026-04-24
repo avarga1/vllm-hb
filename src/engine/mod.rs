@@ -11,6 +11,7 @@ pub mod config;
 pub mod dtype;
 pub mod kv_cache;
 pub mod loader;
+pub mod quant;
 
 // Primary public API — callers import `engine::Engine` and `engine::ModelConfig`.
 pub use config::ModelConfig;
