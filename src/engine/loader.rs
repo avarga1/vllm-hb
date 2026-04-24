@@ -8,8 +8,8 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 
 use super::arch::{
-    Backend, GgufLlamaBackend, LlamaBackend, MixtralBackend, Phi3Backend, Qwen2Backend,
-    Qwen3Backend, TpLlamaBackend,
+    Backend, Gemma4Backend, GgufLlamaBackend, LlamaBackend, MixtralBackend, Phi3Backend,
+    Qwen2Backend, Qwen3Backend, TpLlamaBackend,
 };
 use super::config::{HfMeta, ModelConfig};
 use super::dtype;
@@ -149,9 +149,12 @@ impl Engine {
                 Backend::Qwen3(Qwen3Backend::load(&config_str, &shards, dtype, &device)?)
             }
             ("phi3", _) => Backend::Phi3(Phi3Backend::load(&config_str, &shards, dtype, &device)?),
+            ("gemma4", _) => {
+                Backend::Gemma4(Gemma4Backend::load(&config_str, &shards, dtype, &device)?)
+            }
             (other, _) => bail!(
                 "Unsupported model_type: {other:?}. \
-                 Supported: llama, mistral (TP-aware), mixtral, qwen2, qwen3."
+                 Supported: llama, mistral (TP-aware), mixtral, qwen2, qwen3, phi3, gemma4."
             ),
         };
 
